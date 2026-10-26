@@ -2,7 +2,7 @@
 
 零第三方依赖，只用标准库。
 
-    python server.py            # 打开 http://127.0.0.1:8787
+    python server.py            # 打开 http://127.0.0.1:8898
 
 职责：把 config.json 里的「成员池 + 房间」变成可编辑的界面，
 并把 Room 执行过程中的事件通过 SSE 实时推给浏览器。

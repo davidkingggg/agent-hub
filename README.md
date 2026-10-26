@@ -354,7 +354,7 @@ python launch.py --stop         # 停掉
 启动后输出三行关键信息：
 
 ```
-局域网  http://10.0.218.85:8899/?t=<令牌>
+局域网  http://192.168.x.x:8899/?t=<令牌>
 公网    https://xxxx.trycloudflare.com/?t=<令牌>
 令牌    首次启动自动生成，存在 .remote_token
 ```
