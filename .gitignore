@@ -1,0 +1,31 @@
+# 运行时数据 —— 每个人的都不一样，不进仓库
+hub.db
+config.json
+workspaces/
+projects/
+memories/
+
+# 远程控制产生的敏感文件
+.remote_token
+.remote.url.txt
+remote.url.txt
+remote-qr.png
+*.log
+.launch.pid
+bin/
+
+# 临时文件
+_sse.txt
+_tmp.json
+_a.json
+_div.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db

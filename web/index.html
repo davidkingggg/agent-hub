@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>协作房间</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-dot"></span>协作房间
+    </div>
+    <div id="credits" class="credits" title="点击填写剩余积分">
+      <span class="credits-label">剩余积分</span>
+      <span class="credits-value" id="credits-value">—</span>
+      <a class="credits-link" id="credits-link" href="https://www.codebuddy.ai" target="_blank"
+         rel="noopener" title="打开官网查看用量">↗</a>
+    </div>
+    <div class="section-title">群聊</div>
+    <div id="room-list" class="room-list"></div>
+    <button id="btn-new-room" class="btn-ghost wide">+ 新建群聊</button>
+    <div class="sidebar-footer">
+      <span id="conn-dot" class="dot off"></span>
+      <span id="conn-text">连接中…</span>
+    </div>
+  </aside>
+
+  <main class="chat">
+    <header class="chat-header">
+      <select id="room-select" class="room-select"></select>
+      <h1 id="room-title">主群</h1>
+      <span id="room-meta" class="meta"></span>
+      <span class="spacer"></span>
+      <button id="btn-project" class="btn-ghost">项目内容</button>
+      <button id="btn-new-room-top" class="btn-ghost">+ 群聊</button>
+    </header>
+    <div id="mobile-members" class="mobile-members"></div>
+    <div id="messages" class="messages"></div>
+    <div class="composer">
+      <div id="mention-pop" class="mention-pop hidden"></div>
+      <textarea id="input" rows="2" placeholder="在这里输入消息。打 @ 选人，或直接点右侧成员头像（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="btn-send">发送</button>
+    </div>
+  </main>
+
+  <aside class="members">
+    <div class="panel-head">
+      <span>成员</span>
+      <button id="btn-add-member" class="btn-ghost">+ 添加</button>
+    </div>
+    <div id="member-list" class="member-list"></div>
+    <div class="hint">点头像编辑人格，长按或右键可删</div>
+  </aside>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <h2 id="modal-title">编辑成员</h2>
+    <div class="tabs">
+      <button class="tab active" data-tab="persona">人格设定</button>
+      <button class="tab" data-tab="memory">成员记忆</button>
+    </div>
+
+    <div class="tab-panel" id="panel-persona">
+      <div class="form">
+        <div class="row">
+          <label>名字（@ 用这个）<input id="f-name" placeholder="researcher"></label>
+          <label>角色<input id="f-role" placeholder="研究员"></label>
+        </div>
+        <div class="row">
+          <label>昵称<input id="f-persona" placeholder="阿研"></label>
+          <label>颜色<input id="f-color" type="color" value="#4F46E5"></label>
+        </div>
+        <div class="row">
+          <label>模型（只影响这个成员）
+            <select id="f-model"></select>
+          </label>
+          <label>推理强度 effort
+            <select id="f-effort"></select>
+          </label>
+        </div>
+        <label>人格设定（全局生效，跟着这个成员走，换群聊也不变）
+          <textarea id="f-prompt" rows="11" placeholder="你叫……&#10;&#10;【性格】…&#10;【职责】…&#10;【说话方式】…"></textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="tab-panel hidden" id="panel-memory">
+      <p class="tip">这个成员在<b>当前群聊</b>里积累的私有记忆，只有它自己看得到。换个群聊就是另一份。</p>
+      <textarea id="f-memory" rows="15" placeholder="（还没有记忆，跑几轮任务就会自动积累）"></textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-del" class="btn-danger">彻底删除</button>
+      <button id="btn-remove-room" class="btn-ghost">从本群移除</button>
+      <span class="spacer"></span>
+      <button id="btn-cancel" class="btn-ghost">取消</button>
+      <button id="btn-save" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-project" class="modal hidden">
+  <div class="modal-card">
+    <h2>项目内容</h2>
+    <p class="tip">整个群聊共享，所有成员都会看到。上面可以写项目背景、目标、约束；下面会自动追加对话记录。</p>
+    <textarea id="f-project" rows="18"></textarea>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="btn-project-cancel" class="btn-ghost">取消</button>
+      <button id="btn-project-save" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-add" class="modal hidden">
+  <div class="modal-card" style="width:min(520px,100%)">
+    <h2>添加成员到本群</h2>
+    <div class="tabs">
+      <button class="tab active" data-addtab="pool">已有成员</button>
+      <button class="tab" data-addtab="tpl">模板库</button>
+    </div>
+    <p class="tip" id="add-tip">从已有成员里勾选加入。人格是全局的，加进来只是建立关联。</p>
+    <div id="add-pool" class="add-list"></div>
+    <div id="add-tpl" class="add-list hidden"></div>
+    <div class="modal-actions">
+      <button id="btn-new-in-room" class="btn-ghost">+ 空白新建</button>
+      <span class="spacer"></span>
+      <button id="btn-add-cancel" class="btn-ghost">取消</button>
+      <button id="btn-add-ok" class="btn-primary">加入</button>
+    </div>
+  </div>
+</div>
+
+<div id="ctx-menu" class="ctx-menu hidden"></div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>
