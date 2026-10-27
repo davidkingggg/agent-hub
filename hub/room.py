@@ -222,7 +222,17 @@ class Room:
         ok, why = member.available()
         if not ok:
             return f"[{member.name} 当前不可用] {why}"
-        out = member.run(self._prompt(member, trigger), self.workdir)
+
+        # 一次调用可能要跑几分钟，期间前端必须知道「它还在干活」，
+        # 否则用户看到的就是一片死寂，以为请求失败了。
+        self._emit("working", name=member.name, on=True)
+        started = time.time()
+        try:
+            out = member.run(self._prompt(member, trigger), self.workdir)
+        finally:
+            self._emit("working", name=member.name, on=False,
+                       seconds=round(time.time() - started, 1))
+
         # 把自己这次做了什么记进私有记忆，下次还能想起来
         if out and not out.startswith("["):
             gist = " ".join(out.split())[:110]

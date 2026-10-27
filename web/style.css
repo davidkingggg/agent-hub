@@ -79,6 +79,12 @@ body {
 }
 .credits-link:hover { color: var(--primary); background: var(--primary-soft); }
 
+.empty-hint {
+  font-size: 11px;
+  color: var(--faint);
+  padding: 6px 10px;
+}
+
 .section-title {
   font-size: 11px;
   color: var(--faint);
@@ -382,6 +388,48 @@ button {
 
 .room-item.archived { opacity: .5; }
 .archived-head { margin-top: 10px; }
+
+/* ---- 单聊项：小头像 + 昵称 ---- */
+.room-item .mini-av {
+  width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center;
+  font-size: 10px; font-weight: 500; color: #fff;
+  flex-shrink: 0;
+}
+.room-item.dm { gap: 8px; }
+
+/* ---- 工作中状态条 ---- */
+.working-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 24px;
+  font-size: 12px; color: var(--muted);
+  background: #fafafa;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.working-bar.hidden { display: none; }
+.working-bar .elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--faint);
+}
+
+.spinner {
+  width: 12px; height: 12px;
+  border: 2px solid #d4d4d8;
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 成员卡片工作中：头像呼吸 */
+.member-card.working { border-color: var(--primary); background: var(--primary-soft); }
+.member-card.working .avatar { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .55; }
+}
 
 .ctx-menu {
   position: fixed; z-index: 200;

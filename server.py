@@ -503,13 +503,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def _create_room(self, body: dict):
         cfg = ensure_ports(load_config())
-        name = (body.get("name") or "").strip() or "新群聊"
+        kind = (body.get("kind") or "group").strip()
         rid = f"r{int(time.time() * 1000) % 10_000_000}"
-        cfg["rooms"].append({
-            "id": rid, "name": name, "workdir": rid,
-            "default": "",
-            "members": body.get("members") or [],     # 新群聊默认没有成员
-        })
+
+        if kind == "direct":
+            member = (body.get("member") or "").strip()
+            pool = {m["name"]: m for m in cfg["members"]}
+            if member not in pool:
+                return self._json({"error": "成员不存在"}, 400)
+            # 同一个成员只保留一个单聊，重复点就跳过去
+            for r in cfg["rooms"]:
+                if r.get("kind") == "direct" and r.get("members") == [member]:
+                    return self._json({"ok": True, "id": r["id"], "config": cfg,
+                                       "existed": True})
+            spec = pool[member]
+            name = spec.get("persona") or spec.get("role") or member
+            cfg["rooms"].append({
+                "id": rid, "name": name, "kind": "direct", "workdir": rid,
+                "default": member, "members": [member],
+            })
+        else:
+            name = (body.get("name") or "").strip() or "新群聊"
+            cfg["rooms"].append({
+                "id": rid, "name": name, "kind": "group", "workdir": rid,
+                "default": "",
+                "members": body.get("members") or [],     # 新群聊默认没有成员
+            })
+
         save_config(cfg)
         _store.ensure_room(rid)
         return self._json({"ok": True, "id": rid, "config": cfg})

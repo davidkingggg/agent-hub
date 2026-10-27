@@ -11,6 +11,7 @@ const state = {
   es: null,
   busy: false,
   editing: null,
+  working: new Map(),      // 成员名 -> 开始时间戳
 };
 
 /* ---------------- 基础 ---------------- */
@@ -75,9 +76,20 @@ function hideCtxMenu() {
 }
 
 function roomItem(r) {
+  const isDm = r.kind === 'direct';
   const el = document.createElement('div');
   el.className = 'room-item' + (r.id === state.roomId ? ' active' : '')
-    + (r.archived ? ' archived' : '');
+    + (r.archived ? ' archived' : '') + (isDm ? ' dm' : '');
+
+  if (isDm) {
+    const who = (r.members || [])[0] || '';
+    const m = who ? memberOf(who) : null;
+    const av = document.createElement('span');
+    av.className = 'mini-av';
+    av.style.background = m?.color || '#71717a';
+    av.textContent = initials(m?.persona || who || '?');
+    el.appendChild(av);
+  }
 
   const nm = document.createElement('span');
   nm.textContent = r.name;
@@ -105,19 +117,32 @@ function roomItem(r) {
 }
 
 function renderRooms() {
-  const box = $('room-list');
-  box.innerHTML = '';
   const rooms = state.config.rooms || [];
-  rooms.filter((r) => !r.archived).forEach((r) => box.appendChild(roomItem(r)));
-
+  const active = rooms.filter((r) => !r.archived);
+  const groups = active.filter((r) => r.kind !== 'direct');
+  const dms = active.filter((r) => r.kind === 'direct');
   const arch = rooms.filter((r) => r.archived);
+
+  const gbox = $('room-list');
+  gbox.innerHTML = '';
+  if (!groups.length) {
+    gbox.innerHTML = '<div class="empty-hint">还没有群聊</div>';
+  }
+  groups.forEach((r) => gbox.appendChild(roomItem(r)));
   if (arch.length) {
     const h = document.createElement('div');
     h.className = 'section-title archived-head';
     h.textContent = `已归档 ${arch.length}`;
-    box.appendChild(h);
-    arch.forEach((r) => box.appendChild(roomItem(r)));
+    gbox.appendChild(h);
+    arch.forEach((r) => gbox.appendChild(roomItem(r)));
   }
+
+  const dbox = $('dm-list');
+  dbox.innerHTML = '';
+  if (!dms.length) {
+    dbox.innerHTML = '<div class="empty-hint">还没有单聊</div>';
+  }
+  dms.forEach((r) => dbox.appendChild(roomItem(r)));
 }
 
 async function setArchived(id, flag) {
@@ -175,6 +200,7 @@ function renderMembers() {
     rl.textContent = `${m.role} · @${m.name}`;
     info.append(nm, rl);
 
+    card.dataset.name = name;
     card.append(av, info);
     card.title = name === leader
       ? `负责人 · 点击插入 @${m.name}，右键更多`
@@ -350,6 +376,9 @@ function handleEvent(ev) {
     case 'status':
       addStatus(ev.text);
       break;
+    case 'working':
+      updateWorking(ev.name, ev.on);
+      break;
     case 'busy':
       state.busy = !!ev.on;
       $('btn-send').disabled = state.busy;
@@ -361,14 +390,68 @@ function handleEvent(ev) {
     case 'idle':
       state.busy = false;
       $('btn-send').disabled = false;
+      state.working.clear();          // 兜底：万一 working 事件丢了
+      renderWorking();
       break;
   }
+}
+
+/* ---------------- 工作中状态 ---------------- */
+
+let workingTimer = null;
+
+function updateWorking(name, on) {
+  if (!name) return;
+  if (on) state.working.set(name, Date.now());
+  else state.working.delete(name);
+  renderWorking();
+}
+
+function renderWorking() {
+  const bar = $('working-bar');
+  const cards = document.querySelectorAll('.member-card');
+
+  cards.forEach((c) => {
+    c.classList.toggle('working', state.working.has(c.dataset.name));
+  });
+
+  if (!state.working.size) {
+    bar.classList.add('hidden');
+    if (workingTimer) {
+      clearInterval(workingTimer);
+      workingTimer = null;
+    }
+    return;
+  }
+
+  bar.classList.remove('hidden');
+
+  const paint = () => {
+    const names = [...state.working.keys()];
+    const started = Math.min(...state.working.values());
+    const secs = Math.max(0, Math.round((Date.now() - started) / 1000));
+
+    bar.innerHTML = '';
+    const sp = document.createElement('span');
+    sp.className = 'spinner';
+    const txt = document.createElement('span');
+    txt.textContent = `${names.join('、')} 正在工作`;
+    const el = document.createElement('span');
+    el.className = 'elapsed';
+    el.textContent = `${secs}s`;
+    bar.append(sp, txt, el);
+  };
+
+  paint();
+  if (!workingTimer) workingTimer = setInterval(paint, 1000);
 }
 
 /* ---------------- 房间 ---------------- */
 
 async function selectRoom(id) {
   state.roomId = id;
+  state.working.clear();        // 切房间时清掉上一个房间的工作状态
+  renderWorking();
   const room = state.config.rooms.find((r) => r.id === id);
   $('room-title').textContent = room?.name || id;
   renderRooms();
@@ -406,17 +489,85 @@ function askText(title, placeholder = '') {
   });
 }
 
-async function newRoom() {
+async function newRoom(kind = 'group') {
+  if (kind === 'direct') return newDirect();
+
   const name = await askText('新建群聊', '比如：投研小组');
   if (!name) return;
   const res = await api('/api/rooms', {
     method: 'POST',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, kind: 'group' }),
   });
   state.config = res.config;
   renderRooms();
   await selectRoom(res.id);
   toast(`已创建「${name}」`);
+}
+
+async function newDirect() {
+  const members = state.config.members || [];
+  if (!members.length) {
+    toast('还没有成员，先在右侧加一个');
+    return;
+  }
+  const who = await pickMember('和谁单聊？');
+  if (!who) return;
+
+  const res = await api('/api/rooms', {
+    method: 'POST',
+    body: JSON.stringify({ kind: 'direct', member: who }),
+  });
+  state.config = res.config;
+  renderRooms();
+  await selectRoom(res.id);
+  toast(res.existed ? '已经有和它的单聊，跳过去了' : `已和 ${who} 开始单聊`);
+}
+
+/* ---------------- 成员选择器 ---------------- */
+
+let pickResolve = null;
+
+function pickMember(title) {
+  return new Promise((resolve) => {
+    pickResolve = resolve;
+    $('pick-title').textContent = title;
+    const box = $('pick-list');
+    box.innerHTML = '';
+
+    (state.config.members || []).forEach((m) => {
+      const row = document.createElement('div');
+      row.className = 'tpl-item';
+
+      const av = document.createElement('div');
+      av.className = 'avatar';
+      av.style.cssText = `width:26px;height:26px;font-size:11px;border-radius:8px;background:${m.color || '#71717a'}`;
+      av.textContent = initials(m.persona || m.name);
+
+      const info = document.createElement('div');
+      info.className = 'info';
+      const nm = document.createElement('div');
+      nm.className = 'nm';
+      nm.textContent = m.persona || m.name;
+      const ds = document.createElement('div');
+      ds.className = 'ds';
+      ds.textContent = `${m.role} · @${m.name}`;
+      info.append(nm, ds);
+
+      row.append(av, info);
+      row.onclick = () => closePick(m.name);
+      box.appendChild(row);
+    });
+
+    $('modal-pick').classList.remove('hidden');
+  });
+}
+
+function closePick(value) {
+  $('modal-pick').classList.add('hidden');
+  if (pickResolve) {
+    pickResolve(value || '');
+    pickResolve = null;
+  }
 }
 
 async function deleteRoom(id) {
@@ -858,8 +1009,10 @@ async function boot() {
 }
 
 $('btn-send').onclick = send;
-$('btn-new-room').onclick = newRoom;
-$('btn-new-room-top').onclick = newRoom;
+$('btn-new-room').onclick = () => newRoom('group');
+$('btn-new-room-top').onclick = () => newRoom('group');
+$('btn-new-dm').onclick = () => newRoom('direct');
+$('pick-cancel').onclick = () => closePick('');
 $('room-select').onchange = (e) => selectRoom(e.target.value);
 
 $('btn-add-member').onclick = openAddMember;
