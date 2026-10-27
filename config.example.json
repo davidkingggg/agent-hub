@@ -37,6 +37,7 @@
       "default": "researcher",
       "leader": "",
       "max_hops": 6,
+      "max_calls": 20,
       "leader_max_runs": 3,
       "members": ["researcher", "builder"]
     }

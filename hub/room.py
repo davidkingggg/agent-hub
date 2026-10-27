@@ -23,7 +23,8 @@ class Room:
     def __init__(self, store: Store, room_id: str, members: list[Adapter],
                  workdir: Path, default_member: str = "",
                  max_hops: int = 3, max_runs: int = 1, verbose: bool = True,
-                 leader: str = "", leader_max_runs: int = 3, on_event=None):
+                 leader: str = "", leader_max_runs: int = 3,
+                 max_calls: int = 40, on_event=None):
         self.store = store
         self.room_id = room_id
         self.members = {m.name: m for m in members}
@@ -39,6 +40,12 @@ class Room:
             else next(iter(self.members), "")
         self.max_hops = max_hops
         self.max_runs = max_runs
+        # 真正的成本闸门是「总共调用了多少次模型」，不是「嵌套了几层」。
+        # 层数只用来防深度爆炸，不该拿来当任务轮次上限——Leader 模式下
+        # 一次「派发-验收」就要吃掉 2 层，6 层其实只够 3 轮。
+        self.max_calls = max(1, max_calls)
+        self._calls = 0
+        self._wrapped = False
         # 负责人：它派出去的活，结果会汇聚回它这里验收。
         # 它需要多轮发言（派发 → 验收 → 返工），所以单独给一个更高的次数上限。
         self.leader = leader if leader in self.members else ""
@@ -81,6 +88,8 @@ class Room:
     # ---------- 对外 ----------
     def say(self, text: str, sender: str = "你") -> None:
         self._runs = {}                    # 每轮用户请求重置执行计数
+        self._calls = 0                    # 预算按「每次用户请求」重新计
+        self._wrapped = False
         self.store.add(self.room_id, sender, text)
         self._log(f"\n{sender}: {text}")
         self._emit("message", sender=sender, content=text, kind="say")
@@ -93,12 +102,60 @@ class Room:
             tag = {"say": "", "result": ""}.get(m["kind"], "")
             self._log(f"\n[{m['sender']}] {m['content']}")
 
+    # ---------- 预算与收尾 ----------
+
+    def _guard(self, depth: int) -> bool:
+        """还能不能继续跑。到限不是硬停，而是走收尾流程。"""
+        if self._calls >= self.max_calls:
+            self._wrap_up(f"调用次数用满 {self.max_calls} 次")
+            return False
+        if depth > self.max_hops:
+            self._wrap_up(f"嵌套到 {self.max_hops} 层")
+            return False
+        return True
+
+    def _wrap_up(self, reason: str) -> None:
+        """不再派新活，但给负责人一次收尾机会——戛然而止最让人困惑。
+
+        硬停的表现是「界面突然没动静了」，用户不知道是成功、失败还是卡住。
+        这里让负责人交代清楚：做完了什么、差什么、下一步建议。
+        """
+        if self._wrapped:
+            return
+        self._wrapped = True
+
+        self._log(f"  ⏹ {reason}，进入收尾")
+        self._emit("status", text=f"{reason}，让负责人收尾")
+
+        if not self.leader or self.leader not in self.members:
+            self._emit("status", text=f"已停止：{reason}")
+            return
+
+        self._runs[self.leader] = self._runs.get(self.leader, 0) + 1
+        try:
+            out = self._run_one(self.members[self.leader], (
+                f"（预算用尽：{reason}）\n"
+                "不要再派发任何新任务，也不要 @ 任何人。\n"
+                "基于目前已经拿到的结果，给用户一个明确的收尾说明：\n"
+                "1. 已经完成了什么（有产出就指出文件路径）\n"
+                "2. 还差什么、为什么没做完\n"
+                "3. 建议用户下一步怎么做（比如把剩下的部分单独拆成一次任务）"
+            ))
+        except Exception as e:
+            self._emit("error", text=f"收尾失败：{type(e).__name__}: {e}")
+            return
+
+        if out and not out.startswith("["):
+            self.store.add(self.room_id, self.leader, out, kind="result")
+            self._emit("message", sender=self.leader, content=out, kind="result")
+            self._append_project(self.leader, out)
+            self._log(f"\n{self.leader}（收尾）: {out[:200]}")
+        self._emit("status", text="已收尾")
+
     # ---------- 内部 ----------
     def _dispatch(self, trigger: str, depth: int, parallel: bool = True,
                   force_targets: list[str] | None = None) -> None:
-        if depth > self.max_hops:
-            self._log(f"  （已到 {self.max_hops} 层上限，停止）")
-            self._emit("status", text=f"已到 {self.max_hops} 层上限，停止")
+        if not self._guard(depth):
             return
 
         targets = force_targets or self._targets(trigger)
@@ -116,6 +173,7 @@ class Room:
             return
         for t in targets:
             self._runs[t] = self._runs.get(t, 0) + 1
+        self._calls += len(targets)
 
         self._log(f"  → 本轮交给：{', '.join(targets)}")
         self._emit("status", text=f"交给 {', '.join(targets)}")
@@ -173,8 +231,7 @@ class Room:
         这是 Leader 模式的核心——没有这一步，负责人会收到 N 次孤立的
         「某某的交接」，每次只看到一部分结果，验收就无从谈起。
         """
-        if depth > self.max_hops:
-            self._log(f"  （已到 {self.max_hops} 层上限，停止派发）")
+        if not self._guard(depth):
             return
 
         targets = [t for t in targets if t in self.members]
@@ -186,6 +243,7 @@ class Room:
             return
         for t in targets:
             self._runs[t] = self._runs.get(t, 0) + 1
+        self._calls += len(targets)
 
         self._log(f"  ⇉ 派发 {len(targets)} 个任务：{', '.join(targets)}")
         self._emit("status", text=f"派发 {len(targets)} 个任务：{', '.join(targets)}")
