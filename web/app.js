@@ -488,6 +488,8 @@ async function openMember(name) {
     if (x === curEff) o.selected = true;
     effSel.appendChild(o);
   });
+
+  $('f-fallback').value = (m?.fallback_models || []).join(', ');
   $('btn-del').style.display = m ? '' : 'none';
   $('btn-remove-room').style.display = m ? '' : 'none';
   switchTab('persona');
@@ -511,6 +513,10 @@ async function saveMember() {
     color: $('f-color').value,
     model: $('f-model').value,
     effort: $('f-effort').value,
+    fallback_models: $('f-fallback').value
+      .split(/[,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean),
     system_prompt: $('f-prompt').value,
   };
   if (!payload.name) return toast('名字不能为空');

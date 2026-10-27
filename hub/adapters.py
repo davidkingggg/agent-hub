@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import urllib.error
@@ -53,6 +54,7 @@ class CliAdapter(Adapter):
     # 只放行这些基础变量。从桌面版继承来的 CODEBUDDY_* / 代理变量会让
     # CLI 自己的认证和网络配置失效，实测必须摘干净才能正常调用。
     _KEEP = {"PATH", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOME",
+             "HOMEDRIVE", "HOMEPATH", "PATHEXT",
              "SYSTEMROOT", "COMSPEC", "TEMP", "TMP", "USERNAME", "LANG"}
     _KEEP_PREFIX = ("ANTHROPIC_", "OPENAI_", "DEEPSEEK_", "GEMINI_",
                     "GOOGLE_", "TAVILY_", "QWEN_", "MOONSHOT_")
@@ -62,6 +64,17 @@ class CliAdapter(Adapter):
         for k, v in os.environ.items():
             if k.startswith(self._KEEP_PREFIX):
                 env[k] = v
+
+        # HOME 必须归一化成 Windows 路径。从 Git Bash 启动时 HOME 是
+        # "/c/Users/xxx"，CLI 拿它拼配置目录会找不到 ~/.codebuddy，
+        # 表现成「未登录」——而 USERPROFILE 一直是对的。
+        up = os.environ.get("USERPROFILE", "")
+        if up and "\\" in up:
+            env["HOME"] = up
+            drive, tail = os.path.splitdrive(up)
+            env["HOMEDRIVE"] = drive or "C:"
+            env["HOMEPATH"] = tail or "\\"
+
         extra = self.spec.get("env") or {}
         env.update({k: str(v) for k, v in extra.items()})
         return env
@@ -75,20 +88,82 @@ class CliAdapter(Adapter):
             return False, f"PATH 里找不到 `{exe}`"
         return True, ""
 
+    @staticmethod
+    def _decode(raw: bytes) -> str:
+        """CLI 的输出编码不固定：UTF-8 环境给 UTF-8，中文控制台给 GBK。
+
+        固定用 utf-8 解码会把 GBK 的中文变成一串 ♦ 或乱码，所以逐个试。
+        """
+        if not raw:
+            return ""
+        for enc in ("utf-8", "gbk"):
+            try:
+                return raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return raw.decode("utf-8", errors="replace")
+
+    # ---------- 模型降级 ----------
+
+    def _models(self) -> list[str]:
+        """主模型 + 备用模型，按顺序尝试。"""
+        out: list[str] = []
+        primary = (self.spec.get("model") or "").strip()
+        if primary:
+            out.append(primary)
+        for m in self.spec.get("fallback_models") or []:
+            m = str(m).strip()
+            if m and m not in out:
+                out.append(m)
+        return out
+
+    @staticmethod
+    def _with_model(cmd: str, model: str) -> str:
+        """把命令里的 --model 换成指定值。没有 --model 就原样返回。"""
+        if not model:
+            return cmd
+        return re.sub(r"--model\s+\S+", f"--model {model}", cmd, count=1)
+
+    @staticmethod
+    def _rate_limited(text: str) -> bool:
+        low = (text or "").lower()
+        return ("429" in low or "frequency limit" in low
+                or "usage exceeds" in low or "rate limit" in low
+                or "too many requests" in low)
+
     def run(self, prompt: str, cwd: Path) -> str:
-        cmd = self.spec["cmd"]
+        """依次尝试主模型和备用模型，遇到限流就换下一个。
+
+        免费额度用完时 codebuddy 返回 429，这时自动切到备用（付费）模型，
+        用户不用手动改配置。
+        """
+        models = self._models()
+        if not models:
+            return self._exec(self.spec["cmd"], prompt, cwd)
+
+        last = ""
+        for i, model in enumerate(models):
+            out = self._exec(self._with_model(self.spec["cmd"], model), prompt, cwd)
+            if self._rate_limited(out) and i < len(models) - 1:
+                nxt = models[i + 1]
+                print(f"  [{self.name}] {model} 限流，自动切换到 {nxt}", flush=True)
+                last = out
+                continue
+            return out
+        return last
+
+    def _exec(self, cmd: str, prompt: str, cwd: Path) -> str:
         try:
             p = subprocess.run(
-                cmd, shell=True, input=prompt, cwd=str(cwd),
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=self.timeout, env=self._env())
+                cmd, shell=True, input=prompt.encode("utf-8"), cwd=str(cwd),
+                capture_output=True, timeout=self.timeout, env=self._env())
         except subprocess.TimeoutExpired:
             return f"[超时：超过 {self.timeout}s，已终止]"
         except Exception as e:
             return f"[启动失败] {type(e).__name__}: {e}"
 
-        out = (p.stdout or "").strip()
-        err = (p.stderr or "").strip()
+        out = self._decode(p.stdout).strip()
+        err = self._decode(p.stderr).strip()
         if p.returncode != 0 and not out:
             return f"[退出码 {p.returncode}]\n{err[-900:]}"
         return out or err[-900:] or "[没有输出]"

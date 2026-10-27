@@ -292,6 +292,28 @@ glm-5.3 / -flash, glm-5.2, kimi-k3.1-pro, minimax-m3.1-flash, hy4-preview ...
 
 ---
 
+## 模型自动降级（免费额度用完自动转付费）
+
+免费模型的额度用完时，codebuddy 返回 `429 usage exceeds frequency limit`。
+给成员配了备用模型后，会自动换下一个继续，不用手动改配置：
+
+```json
+"model": "deepseek-v4.1-flash",
+"fallback_models": ["glm-5.3", "kimi-k3.1-pro"]
+```
+
+尝试顺序：主模型 → 备用 1 → 备用 2。
+
+判定限流的关键词：`429` / `frequency limit` / `usage exceeds` / `rate limit` /
+`too many requests`。命中就换下一个，全试完还不行才把最后一个错误返回。
+
+界面上在成员弹窗的「备用模型」输入框里填，逗号分隔。
+
+**代价**：备用模型（比如 glm-5.3）消耗积分，不是免费的。所以这条链路等于
+「免费额度优先，用完自动转付费」。不想花钱就把备用模型留空。
+
+---
+
 ## 剩余积分显示
 
 侧边栏品牌下方有个积分位，**目前是手动维护的**——点一下填数字，会存进 `config.json`。

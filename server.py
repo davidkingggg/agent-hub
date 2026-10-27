@@ -472,6 +472,8 @@ class Handler(BaseHTTPRequestHandler):
             "type": body.get("type", "cli"),
             "model": model,
             "effort": effort,
+            "fallback_models": body.get("fallback_models")
+                or (old.get("fallback_models") if old else []),
             "cmd": body.get("cmd") or DEFAULT_CMD,
             "timeout": int(body.get("timeout") or 600),
             "system_prompt": body.get("system_prompt", ""),

@@ -114,7 +114,7 @@ body {
 .dot.off { background: #ef4444; }
 
 /* ---------- 聊天区 ---------- */
-.chat { display: flex; flex-direction: column; min-width: 0; }
+.chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 .chat-header {
   padding: 12px 20px;
@@ -143,6 +143,7 @@ body {
 
 .messages {
   flex: 1;
+  min-height: 0;          /* 关键：不写这条，内容会把容器撑高，把输入框顶出屏幕 */
   overflow-y: auto;
   padding: 20px 24px 8px;
   display: flex;
@@ -207,6 +208,7 @@ body {
   background: var(--panel);
   align-items: flex-end;
   position: relative;
+  flex-shrink: 0;         /* 输入区永远不被消息挤走 */
 }
 
 .mention-pop {
