@@ -274,6 +274,19 @@ body {
 .member-card .nm { font-size: 13px; font-weight: 500; }
 .member-card .rl { font-size: 11px; color: var(--faint); }
 
+.leader-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  border-radius: 4px;
+  color: #1e40af;
+  background: #dbeafe;
+  vertical-align: 1px;
+}
+
 .hint { font-size: 11px; color: var(--faint); padding: 4px; line-height: 1.5; }
 
 /* ---------- 按钮 ---------- */

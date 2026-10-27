@@ -102,10 +102,15 @@ def build_room(room_id: str, on_event=None) -> Room:
 
     members = [build(s) for s in specs]
     workdir = ROOT / "workspaces" / room_cfg.get("workdir", room_id)
+    # 有负责人时默认给更多层（派发→验收→返工 至少 3 轮）
+    leader = room_cfg.get("leader", "")
+    default_hops = 6 if leader else 3
     return Room(_store, room_id, members, workdir,
                 default_member=room_cfg.get("default", ""),
-                max_hops=int(room_cfg.get("max_hops", 3)),
+                max_hops=int(room_cfg.get("max_hops", default_hops)),
                 max_runs=int(room_cfg.get("max_runs", 1)),
+                leader=leader,
+                leader_max_runs=int(room_cfg.get("leader_max_runs", 3)),
                 verbose=False, on_event=on_event)
 
 
@@ -378,6 +383,17 @@ class Handler(BaseHTTPRequestHandler):
                 if room is None:
                     return self._json({"error": "房间不存在"}, 404)
                 room["archived"] = bool(body.get("archived", True))
+                save_config(cfg)
+                return self._json({"ok": True, "config": cfg})
+            if parts[:2] == ["api", "rooms"] and len(parts) >= 4 and parts[3] == "leader":
+                cfg = load_config()
+                room = next((r for r in cfg["rooms"] if r["id"] == parts[2]), None)
+                if room is None:
+                    return self._json({"error": "房间不存在"}, 404)
+                name = (body.get("leader") or "").strip()
+                if name and name not in room.get("members", []):
+                    return self._json({"error": "该成员不在本群"}, 400)
+                room["leader"] = name
                 save_config(cfg)
                 return self._json({"ok": True, "config": cfg})
             if parts[:2] == ["api", "rooms"] and len(parts) >= 4 and parts[3] == "members":

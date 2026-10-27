@@ -139,6 +139,7 @@ function renderMembers() {
   box.innerHTML = '';
   const room = state.config.rooms.find((r) => r.id === state.roomId);
   const names = room?.members || [];
+  const leader = room?.leader || '';
 
   if (!names.length) {
     const d = document.createElement('div');
@@ -163,23 +164,60 @@ function renderMembers() {
     const nm = document.createElement('div');
     nm.className = 'nm';
     nm.textContent = m.persona || m.name;
+    if (name === leader) {
+      const badge = document.createElement('span');
+      badge.className = 'leader-badge';
+      badge.textContent = '负责人';
+      nm.appendChild(badge);
+    }
     const rl = document.createElement('div');
     rl.className = 'rl';
     rl.textContent = `${m.role} · @${m.name}`;
     info.append(nm, rl);
 
     card.append(av, info);
-    card.title = `点击插入 @${m.name}，右键编辑人格`;
+    card.title = name === leader
+      ? `负责人 · 点击插入 @${m.name}，右键更多`
+      : `点击插入 @${m.name}，右键更多`;
     card.onclick = () => insertMention(m.name);
     card.oncontextmenu = (e) => {
       e.preventDefault();
-      openMember(m.name);
+      const items = [{ label: '编辑人格 / 记忆', action: () => openMember(m.name) }];
+      if (name === leader) {
+        items.push({ label: '取消负责人', action: () => setLeader('') });
+      } else {
+        items.push({ label: '设为本群负责人', action: () => setLeader(name) });
+      }
+      items.push({
+        label: '从本群移除',
+        danger: true,
+        action: () => removeMemberDirect(name),
+      });
+      showCtxMenu(e.clientX, e.clientY, items);
     };
     box.appendChild(card);
   });
 
   $('room-meta').textContent = `${names.length} 位成员`;
   renderMobileMembers();
+}
+
+async function setLeader(name) {
+  const res = await api(`/api/rooms/${state.roomId}/leader`, {
+    method: 'POST',
+    body: JSON.stringify({ leader: name }),
+  });
+  state.config = res.config;
+  renderMembers();
+  toast(name ? `已设为负责人，它派的活会自动汇总回来验收` : '已取消负责人');
+}
+
+async function removeMemberDirect(name) {
+  const res = await api(`/api/rooms/${state.roomId}/members/${name}`, { method: 'DELETE' });
+  state.config = res.config;
+  renderMembers();
+  renderRooms();
+  toast(`已从本群移除 ${name}（人格和记忆都还在）`);
 }
 
 function insertMention(name) {

@@ -23,7 +23,7 @@ class Room:
     def __init__(self, store: Store, room_id: str, members: list[Adapter],
                  workdir: Path, default_member: str = "",
                  max_hops: int = 3, max_runs: int = 1, verbose: bool = True,
-                 on_event=None):
+                 leader: str = "", leader_max_runs: int = 3, on_event=None):
         self.store = store
         self.room_id = room_id
         self.members = {m.name: m for m in members}
@@ -39,9 +39,17 @@ class Room:
             else next(iter(self.members), "")
         self.max_hops = max_hops
         self.max_runs = max_runs
+        # 负责人：它派出去的活，结果会汇聚回它这里验收。
+        # 它需要多轮发言（派发 → 验收 → 返工），所以单独给一个更高的次数上限。
+        self.leader = leader if leader in self.members else ""
+        self.leader_max_runs = max(1, leader_max_runs)
         self.verbose = verbose
         self.on_event = on_event
         self._runs: dict[str, int] = {}
+
+    def _limit(self, name: str) -> int:
+        """这个成员本轮最多能跑几次。"""
+        return self.leader_max_runs if name == self.leader else self.max_runs
 
     def _emit(self, event: str, **data) -> None:
         if self.on_event:
@@ -86,23 +94,24 @@ class Room:
             self._log(f"\n[{m['sender']}] {m['content']}")
 
     # ---------- 内部 ----------
-    def _dispatch(self, trigger: str, depth: int, parallel: bool = True) -> None:
+    def _dispatch(self, trigger: str, depth: int, parallel: bool = True,
+                  force_targets: list[str] | None = None) -> None:
         if depth > self.max_hops:
-            self._log(f"  （已到 {self.max_hops} 层交接上限，停止）")
+            self._log(f"  （已到 {self.max_hops} 层上限，停止）")
+            self._emit("status", text=f"已到 {self.max_hops} 层上限，停止")
             return
 
-        targets = self._targets(trigger)
+        targets = force_targets or self._targets(trigger)
         if not targets:
             if not self.default:
                 return
             targets = [self.default]
 
-        # 同一轮里同一个成员最多跑 max_runs 次，避免「用户 @ 了他，别人又交接给他」
-        # 导致重复劳动——实测这会让同一个 agent 把同一件事做两遍。
-        skipped = [t for t in targets if self._runs.get(t, 0) >= self.max_runs]
+        # 同一轮里同一个成员最多跑 N 次（负责人另算），避免重复劳动
+        skipped = [t for t in targets if self._runs.get(t, 0) >= self._limit(t)]
         if skipped:
             self._log(f"  （{', '.join(skipped)} 本轮已执行过，跳过）")
-        targets = [t for t in targets if self._runs.get(t, 0) < self.max_runs]
+        targets = [t for t in targets if self._runs.get(t, 0) < self._limit(t)]
         if not targets:
             return
         for t in targets:
@@ -140,12 +149,74 @@ class Room:
             self._emit("message", sender=name, content=out, kind="result")
             self._append_project(name, out)
 
-        for name in targets:                       # 处理交接
+        for name in targets:                       # 处理交接 / 派发
             out = results.get(name) or ""
             nxt = [n for n in self._targets(out, strict=True) if n != name]
-            for target in nxt:
-                self._log(f"  ↪ {name} 交接给 {target}")
-                self._dispatch(f"（来自 {name} 的交接）\n{out}", depth + 1, parallel=False)
+            if not nxt:
+                continue
+
+            if name == self.leader:
+                # 负责人派活：并发执行，全部完成后合并成一次交回来验收。
+                # 这是和「普通交接」的关键区别——结果不往下传，而是回到派发者。
+                self._fan_out(nxt, out, leader=name, depth=depth + 1)
+            else:
+                # 普通成员交接：结果交给下游，下游接着做
+                for target in nxt:
+                    self._log(f"  ↪ {name} 交接给 {target}")
+                    self._dispatch(f"（来自 {name} 的交接）\n{out}", depth + 1,
+                                   parallel=False, force_targets=[target])
+
+    def _fan_out(self, targets: list[str], trigger: str,
+                 leader: str, depth: int) -> None:
+        """负责人派发：并发执行，等全部完成，合并结果一次性交回负责人。
+
+        这是 Leader 模式的核心——没有这一步，负责人会收到 N 次孤立的
+        「某某的交接」，每次只看到一部分结果，验收就无从谈起。
+        """
+        if depth > self.max_hops:
+            self._log(f"  （已到 {self.max_hops} 层上限，停止派发）")
+            return
+
+        targets = [t for t in targets if t in self.members]
+        # 派发是负责人的明确指令，不是随机交接，所以放宽到 leader_max_runs：
+        # 否则「验收不通过 → 打回重做」这一步会被 max_runs=1 直接拦掉。
+        targets = [t for t in targets if self._runs.get(t, 0) < self.leader_max_runs]
+        if not targets:
+            self._log("  （派发目标本轮都已执行过，跳过）")
+            return
+        for t in targets:
+            self._runs[t] = self._runs.get(t, 0) + 1
+
+        self._log(f"  ⇉ 派发 {len(targets)} 个任务：{', '.join(targets)}")
+        self._emit("status", text=f"派发 {len(targets)} 个任务：{', '.join(targets)}")
+
+        results: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=min(4, len(targets))) as pool:
+            futures = {pool.submit(self._run_one, self.members[t], trigger): t
+                       for t in targets}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    results[name] = fut.result()
+                except Exception as e:
+                    results[name] = f"[执行异常] {type(e).__name__}: {e}"
+                # 逐个落库，用户能实时看到谁先做完
+                out = (results[name] or "").strip()
+                if out:
+                    self.store.add(self.room_id, name, out, kind="result")
+                    self._emit("message", sender=name, content=out, kind="result")
+                    self._append_project(name, out)
+
+        merged = "\n\n".join(
+            f"【{n} 的产出】\n{r}" for n, r in results.items() if (r or "").strip())
+        if not merged:
+            self._log("  （全员无产出，跳过验收）")
+            return
+
+        self._log(f"  ✓ 汇聚 {len(results)}/{len(targets)} → {leader} 验收")
+        self._emit("status", text=f"汇聚完成，交给 {leader} 验收")
+        self._dispatch(f"（团队完成，请你验收）\n\n{merged}", depth + 1,
+                       parallel=False, force_targets=[leader])
 
     def _run_one(self, member: Adapter, trigger: str) -> str:
         ok, why = member.available()
@@ -203,9 +274,41 @@ class Room:
         with p.open("a", encoding="utf-8") as f:
             f.write(f"\n## [{stamp}] {heading}\n\n{body[:1200]}\n")
 
+    def _rules(self, member: Adapter) -> str:
+        """负责人的规则和普通成员完全不同，这里分开写。"""
+        if member.name == self.leader:
+            others = "、".join(n for n in self.members if n != self.leader) or "（没有其他成员）"
+            return f"""【你的角色：负责人】
+这个房间由你负责。用户只给目标，怎么落地由你决定，队友是 {others}。
+
+【工作流程】
+1. 拆解：把目标拆成具体任务，每项写清「谁做、做什么、什么算完成」。
+2. 派发：在回复最后几行写 @队友 任务描述，可以写多个：
+       @builder 实现 X，跑通后说明改了哪些文件
+       @docs 写一份 X 的说明放到 docs/x.md
+   写完这几行就停下，不要自己动手做他们的活。他们会并发执行，
+   全部完成后结果会自动汇总回你这里，不用你催。
+3. 验收：收到「团队完成，请你验收」后，逐项对照验收标准检查，
+   明确说「通过」或「不通过，因为……」。能看文件就直接看文件，别只信自述。
+4. 返工：不通过的就写 @队友 具体要改什么，会再跑一轮。
+5. 收尾：全部通过后给用户一段总结，不要再 @ 任何人。
+
+【纪律】
+- 派发前先想清楚「什么算完成」，验收就按这个标准判，不要临时加码。
+- 不要替队友做他们该做的事；你自己只做统筹和判断。
+- 最多 3 轮。第 3 轮必须给结论，哪怕还不完美也要说清楚哪里没达到。"""
+
+        return """【规则】
+1. 只做你负责的那部分，不要替队友做他们的活。
+2. 如果你需要某个队友接手，在回复的最后单独一行写：@队友名 具体要他做什么
+3. 不需要别人接手就直接给结论，不要写 @。
+4. 回复本身控制在 400 字以内；长内容写进工作目录的文件，回复里只说明文件路径和要点。
+5. 保持你的性格，不要变成千篇一律的助手腔。"""
+
     def _prompt(self, member: Adapter, trigger: str) -> str:
         roster = "\n".join(
             f"- {m.name}（{m.role}{'，' + m.spec['persona'] if m.spec.get('persona') else ''}）"
+            + ("  ← 负责人" if m.name == self.leader else "")
             for m in self.members.values())
         return f"""你在一个多智能体协作房间里工作，和几个队友共同完成目标。
 所有成员共享同一条对话流、同一个工作目录，以及同一份项目笔记。
@@ -233,9 +336,4 @@ class Room:
 【现在轮到你】
 {trigger}
 
-【规则】
-1. 只做你负责的那部分，不要替队友做他们的活。
-2. 如果你需要某个队友接手，在回复的最后单独一行写：@队友名 具体要他做什么
-3. 不需要别人接手就直接给结论，不要写 @。
-4. 回复本身控制在 400 字以内；长内容写进工作目录的文件，回复里只说明文件路径和要点。
-5. 保持你的性格，不要变成千篇一律的助手腔。"""
+{self._rules(member)}"""

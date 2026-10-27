@@ -35,6 +35,9 @@
       "name": "示例群聊",
       "workdir": "main",
       "default": "researcher",
+      "leader": "",
+      "max_hops": 6,
+      "leader_max_runs": 3,
       "members": ["researcher", "builder"]
     }
   ],
