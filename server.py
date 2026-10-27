@@ -274,6 +274,66 @@ def run_turn(room_id: str, text: str) -> None:
         lock.release()
 
 
+# ============================ 房间消息队列 ============================
+# 同一房间串行执行，不同房间互不影响。
+# 为什么不直接并发：Room 内部的 _runs 计数不是线程安全的，
+# 两个 say 同时跑会互相踩（同一个成员可能被派两次活）。
+# 排队而不是拒绝，是因为「中途想补一句」是正常需求，不该丢消息。
+
+_queues: dict[str, queue.Queue] = {}
+_workers: dict[str, threading.Thread] = {}
+_running: dict[str, bool] = {}
+_queue_lock = threading.Lock()
+
+
+def enqueue_turn(room_id: str, text: str) -> int:
+    """把消息放进房间队列，返回前面还有几条（0 = 立刻开始跑）。
+
+    注意要把「正在跑的那一条」算进去：它已经出队了，但用户眼里它还在前面。
+    """
+    with _queue_lock:
+        q = _queues.setdefault(room_id, queue.Queue())
+        ahead = q.qsize() + (1 if _running.get(room_id) else 0)
+        q.put(text)
+        t = _workers.get(room_id)
+        if t is None or not t.is_alive():
+            t = threading.Thread(target=_worker_loop, args=(room_id,), daemon=True)
+            _workers[room_id] = t
+            t.start()
+        return ahead
+
+
+def queue_size(room_id: str) -> int:
+    q = _queues.get(room_id)
+    return q.qsize() + (1 if _running.get(room_id) else 0) if q else 0
+
+
+def _worker_loop(room_id: str) -> None:
+    q = _queues[room_id]
+    while True:
+        try:
+            text = q.get(timeout=0.6)
+        except queue.Empty:
+            with _queue_lock:
+                # 再确认一次：入队和退出之间有竞态窗口
+                if q.empty():
+                    _workers.pop(room_id, None)
+                    _running.pop(room_id, None)
+                    return
+            continue
+
+        _running[room_id] = True
+        try:
+            run_turn(room_id, text)
+        except Exception as e:
+            traceback.print_exc()
+            BUS.pub(room_id, {"type": "error",
+                              "ts": time.time(),
+                              "text": f"{type(e).__name__}: {e}"})
+        finally:
+            _running[room_id] = False
+
+
 # ============================ HTTP ============================
 
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -375,8 +435,9 @@ class Handler(BaseHTTPRequestHandler):
                 text = (body.get("text") or "").strip()
                 if not text:
                     return self._json({"error": "消息不能为空"}, 400)
-                threading.Thread(target=run_turn, args=(rid, text), daemon=True).start()
-                return self._json({"ok": True})
+                ahead = enqueue_turn(rid, text)
+                return self._json({"ok": True, "queued": ahead,
+                                   "pending": queue_size(rid)})
             if parts[:2] == ["api", "rooms"] and len(parts) >= 4 and parts[3] == "project":
                 write_project(parts[2], body.get("content") or "")
                 return self._json({"ok": True})

@@ -381,7 +381,10 @@ function handleEvent(ev) {
       break;
     case 'busy':
       state.busy = !!ev.on;
-      $('btn-send').disabled = state.busy;
+      // 不再禁用发送：中途想补一句是正常需求，交给后端排队
+      $('input').placeholder = state.busy
+        ? '正在处理… 现在发送会排队，这一轮跑完自动执行'
+        : '在这里输入消息。打 @ 选人，或直接点右侧成员头像（Enter 发送，Shift+Enter 换行）';
       if (ev.on) addStatus('处理中…');
       break;
     case 'error':
@@ -970,14 +973,18 @@ async function editCredits() {
 async function send() {
   const input = $('input');
   const text = input.value.trim();
-  if (!text || state.busy) return;
+  if (!text) return;
   input.value = '';
   input.style.height = 'auto';
+  closeMention();
   try {
-    await api(`/api/rooms/${state.roomId}/say`, {
+    const res = await api(`/api/rooms/${state.roomId}/say`, {
       method: 'POST',
       body: JSON.stringify({ text }),
     });
+    if (res.queued > 0) {
+      toast(`已排队（前面还有 ${res.queued} 条），轮到它时自动执行`);
+    }
   } catch (e) {
     toast('发送失败：' + e.message);
   }
