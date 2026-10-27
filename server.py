@@ -536,8 +536,11 @@ class Handler(BaseHTTPRequestHandler):
             "type": body.get("type", "cli"),
             "model": model,
             "effort": effort,
-            "fallback_models": body.get("fallback_models")
-                or (old.get("fallback_models") if old else []),
+            # 注意：不能用 `body.get(...) or old`。空列表是 falsy，
+            # 那样「把备用模型清空」会被旧值顶回去，看起来像保存失败。
+            "fallback_models": body["fallback_models"]
+                if "fallback_models" in body
+                else (old.get("fallback_models") if old else []),
             "cmd": body.get("cmd") or DEFAULT_CMD,
             "timeout": int(body.get("timeout") or 600),
             "system_prompt": body.get("system_prompt", ""),
