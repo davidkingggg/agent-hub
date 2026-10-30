@@ -88,6 +88,17 @@ _store = Store(DB_PATH)
 
 def load_config() -> dict:
     with _cfg_lock:
+        if not CONFIG_PATH.exists():
+            # 首次运行：从示例配置起一份，否则直接崩在 FileNotFoundError 上，
+            # 别人 clone 下来根本跑不起来
+            example = ROOT / "config.example.json"
+            if example.exists():
+                CONFIG_PATH.write_text(example.read_text(encoding="utf-8"),
+                                       encoding="utf-8")
+                print("首次运行，已从 config.example.json 生成 config.json",
+                      flush=True)
+            else:
+                return {"members": [], "rooms": []}
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
