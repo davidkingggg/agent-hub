@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from hub.adapters import build          # noqa: E402
 from hub.room import Room               # noqa: E402
 from hub.store import Store             # noqa: E402
+from hub import vault                   # noqa: E402
 
 
 def apply_path_extra(cfg: dict) -> None:
@@ -36,7 +37,7 @@ def apply_path_extra(cfg: dict) -> None:
     os.environ["PATH"] = os.pathsep.join(dirs + [os.environ.get("PATH", "")])
 
 
-def load_config() -> dict:
+def load_config(room_key: str = "") -> dict:
     """和 GUI 共用同一份 config.json。"""
     cfg_path = ROOT / "config.json"
     if not cfg_path.exists():
@@ -53,8 +54,17 @@ def load_config() -> dict:
             m["port"] = nxt
             used.add(nxt)
 
-    # 默认操作第一个房间
-    room = (cfg.get("rooms") or [{}])[0]
+    # 默认操作第一个未归档的房间，不再写死 rooms[0]（可能是已归档或空房间）
+    rooms = cfg.get("rooms") or []
+    room = None
+    if room_key:
+        room = next((r for r in rooms
+                     if r.get("id") == room_key or r.get("name") == room_key), None)
+        if room is None:
+            choices = "、".join(f"{r.get('id')}({r.get('name', '')})" for r in rooms)
+            sys.exit(f"找不到房间「{room_key}」，可选：{choices}")
+    if room is None:
+        room = next((r for r in rooms if not r.get("archived")), rooms[0] if rooms else {})
     cfg["_room"] = room
     pool = {m["name"]: m for m in cfg["members"]}
 
@@ -62,6 +72,9 @@ def load_config() -> dict:
         cmd = str(m.get("cmd", ""))
         cmd = cmd.replace("{port}", str(m.get("port", 3977)))
         cmd = cmd.replace("{model}", str(m.get("model") or "deepseek-v4.1-flash"))
+        # {effort} 漏了会原样把 "--effort {effort}" 传给 codebuddy，
+        # 表现成启动失败或参数非法，而 GUI 入口是展开的——两边行为必须一致。
+        cmd = cmd.replace("{effort}", str(m.get("effort") or "ultracode"))
         return dict(m, cmd=cmd)
 
     cfg["members"] = [_expand(pool[n]) for n in room.get("members", list(pool)) if n in pool]
@@ -94,7 +107,9 @@ def make_room(cfg: dict, demo: bool = False) -> Room:
                 max_runs=int(room.get("max_runs", 1)),
                 leader=leader,
                 leader_max_runs=int(room.get("leader_max_runs", 3)),
-                max_calls=int(room.get("max_calls", default_calls)))
+                max_calls=int(room.get("max_calls", default_calls)),
+                room_name=room.get("name") or room_id,
+                project_name=room.get("project") or room.get("workdir") or room_id)
 
 
 def cmd_check(cfg: dict) -> None:
@@ -118,13 +133,21 @@ def main() -> None:
 
     ap = argparse.ArgumentParser(description="本地多智能体协作房间")
     ap.add_argument("message", nargs="*", help="直接发送一条消息")
+    ap.add_argument("--room", default="", help="指定房间（id 或名字），默认第一个未归档的")
     ap.add_argument("--demo", action="store_true", help="全部成员用模拟实现")
     ap.add_argument("--check", action="store_true", help="只检查成员可用性")
     ap.add_argument("--history", action="store_true", help="打印房间历史")
     args = ap.parse_args()
 
-    cfg = load_config()
+    cfg = load_config(args.room)
     apply_path_extra(cfg)
+
+    # 和 GUI 共用同一个 Obsidian 仓库，先把笔记和索引补齐
+    try:
+        raw = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
+        vault.sync_vault(ROOT / "projects", raw)
+    except Exception as e:
+        print(f"（记忆库同步跳过：{type(e).__name__}: {e}）")
 
     if args.check:
         cmd_check(cfg)
@@ -141,7 +164,8 @@ def main() -> None:
         return
 
     names = ", ".join(room.members)
-    print(f"房间「{cfg.get('room', 'main')}」已就绪，成员：{names}")
+    room_name = cfg.get("_room", {}).get("name") or cfg.get("_room", {}).get("id", "main")
+    print(f"房间「{room_name}」已就绪，成员：{names}")
     print("用 @名字 指定谁来做；输入 /exit 退出，/history 看记录\n")
     while True:
         try:

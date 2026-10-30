@@ -16,6 +16,10 @@ import shutil
 import subprocess
 import urllib.error
 import urllib.request
+
+# 模型名会被拼进 shell 命令，只允许这些字符。
+# 覆盖 claude-sonnet-4 / gpt-5.2 / glm-5.3 / openai/gpt-5 这类常见写法。
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]{0,63}$")
 from pathlib import Path
 
 
@@ -119,8 +123,15 @@ class CliAdapter(Adapter):
 
     @staticmethod
     def _with_model(cmd: str, model: str) -> str:
-        """把命令里的 --model 换成指定值。没有 --model 就原样返回。"""
+        """把命令里的 --model 换成指定值。没有 --model 就原样返回。
+
+        model 会被拼进 shell 命令（shell=True），所以必须是白名单里的安全字符。
+        否则 `--model "gpt-5; calc.exe"` 就是一条现成的命令注入。
+        """
         if not model:
+            return cmd
+        if not _MODEL_RE.fullmatch(model):
+            print(f"  [warn] 模型名含非法字符，已忽略：{model!r}", flush=True)
             return cmd
         return re.sub(r"--model\s+\S+", f"--model {model}", cmd, count=1)
 

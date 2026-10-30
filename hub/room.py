@@ -15,8 +15,23 @@ from pathlib import Path
 
 from .adapters import Adapter
 from .store import Store
+from . import vault
 
 MENTION = re.compile(r"@([\w\u4e00-\u9fa5\-]{1,20})")
+
+
+def _human_size(n) -> str:
+    """把字节数变成人能读的大小，写进 prompt 里省得模型自己算。"""
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return ""
+
 
 
 class Room:
@@ -24,17 +39,23 @@ class Room:
                  workdir: Path, default_member: str = "",
                  max_hops: int = 3, max_runs: int = 1, verbose: bool = True,
                  leader: str = "", leader_max_runs: int = 3,
-                 max_calls: int = 40, on_event=None):
+                 max_calls: int = 40, on_event=None, room_name: str = "",
+                 project_name: str = ""):
         self.store = store
         self.room_id = room_id
+        self.room_name = room_name or room_id
+        # 记忆按「项目」存：project_name 是 projects/ 下的目录名，
+        # 由群聊实际在做的事决定，一旦定下就写进 config，不随群聊改名而变。
+        self.project_name = project_name or Path(workdir).name
         self.members = {m.name: m for m in members}
         self.workdir = Path(workdir).resolve()
         self.workdir.mkdir(parents=True, exist_ok=True)
         # 三块内容按维度分开存：
         #   人格设定 -> config.json（全局，跟着成员走）
-        #   项目内容 -> projects/<群聊>/project.md（群聊级，全员共享）
-        #   成员记忆 -> projects/<群聊>/memory/<成员>.md（成员 × 群聊）
-        self.project_dir = self.workdir.parent.parent / "projects" / self.workdir.name
+        #   项目记忆 -> projects/<项目>/project.md（群聊级，全员共享）
+        #   成员记忆 -> projects/<项目>/memory/<成员>.md（成员 × 项目）
+        # 后两者同时是 Obsidian vault 里的笔记，格式由 hub/vault.py 统一维护。
+        self.project_dir = self.workdir.parent.parent / "projects" / self.project_name
         self.memory_dir = self.project_dir / "memory"
         self.default = default_member if default_member in self.members \
             else next(iter(self.members), "")
@@ -86,16 +107,44 @@ class Room:
         return [n for n in dict.fromkeys(names) if n in self.members]
 
     # ---------- 对外 ----------
-    def say(self, text: str, sender: str = "你") -> None:
+    def say(self, text: str, sender: str = "你",
+            attachments: list[dict] | None = None) -> None:
+        attachments = attachments or []
         self._runs = {}                    # 每轮用户请求重置执行计数
         self._calls = 0                    # 预算按「每次用户请求」重新计
         self._wrapped = False
-        self.store.add(self.room_id, sender, text)
+        text = (text or "").strip() or (
+            "（用户只上传了附件，没有附文字说明）" if attachments else "")
+        mid = self.store.add(self.room_id, sender, text,
+                             meta={"attachments": attachments} if attachments else None)
         self._log(f"\n{sender}: {text}")
-        self._emit("message", sender=sender, content=text, kind="say")
-        self._append_project("用户", text)
-        self._dispatch(text, depth=1)
+        if attachments:
+            self._log(f"  📎 附件 {len(attachments)} 个："
+                      + "、".join(a.get("path", "") for a in attachments))
+        self._emit("message", sender=sender, content=text, kind="say",
+                   attachments=attachments, id=mid)
+        self._append_project("用户", text + self._attach_note(attachments), mid)
+        self._dispatch(self._with_attachments(text, attachments), depth=1)
         self._emit("idle")
+
+    def _attach_note(self, attachments: list[dict]) -> str:
+        if not attachments:
+            return ""
+        lines = "\n".join(
+            f"- {a.get('path', '')}（{a.get('name', '')}，{_human_size(a.get('size'))}）"
+            for a in attachments)
+        return f"\n\n【附件】\n{lines}"
+
+    def _with_attachments(self, text: str, attachments: list[dict]) -> str:
+        """附件是「用户刚给的材料」，必须在触发指令里点明，否则成员只会看到一串文件名。"""
+        if not attachments:
+            return text
+        return (
+            f"{text}\n\n【用户上传的附件】\n"
+            "这些文件已经放进工作目录，需要时直接用你的工具读取：\n"
+            f"{self._attach_note(attachments).strip()}\n"
+            "图片就去看图，文档就打开读；没读过的内容不要假装知道。"
+        )
 
     def replay(self, limit: int = 40) -> None:
         for m in self.store.history(self.room_id, limit):
@@ -146,9 +195,9 @@ class Room:
             return
 
         if out and not out.startswith("["):
-            self.store.add(self.room_id, self.leader, out, kind="result")
-            self._emit("message", sender=self.leader, content=out, kind="result")
-            self._append_project(self.leader, out)
+            mid = self.store.add(self.room_id, self.leader, out, kind="result")
+            self._emit("message", sender=self.leader, content=out, kind="result", id=mid)
+            self._append_project(self.leader, out, mid)
             self._log(f"\n{self.leader}（收尾）: {out[:200]}")
         self._emit("status", text="已收尾")
 
@@ -201,11 +250,11 @@ class Room:
             out = (results.get(name) or "").strip()
             if not out:
                 continue
-            self.store.add(self.room_id, name, out, kind="result")
+            mid = self.store.add(self.room_id, name, out, kind="result")
             preview = out[:280].replace("\n", " ")
             self._log(f"\n{name}: {preview}{'…' if len(out) > 280 else ''}")
-            self._emit("message", sender=name, content=out, kind="result")
-            self._append_project(name, out)
+            self._emit("message", sender=name, content=out, kind="result", id=mid)
+            self._append_project(name, out, mid)
 
         for name in targets:                       # 处理交接 / 派发
             out = results.get(name) or ""
@@ -261,9 +310,9 @@ class Room:
                 # 逐个落库，用户能实时看到谁先做完
                 out = (results[name] or "").strip()
                 if out:
-                    self.store.add(self.room_id, name, out, kind="result")
-                    self._emit("message", sender=name, content=out, kind="result")
-                    self._append_project(name, out)
+                    mid = self.store.add(self.room_id, name, out, kind="result")
+                    self._emit("message", sender=name, content=out, kind="result", id=mid)
+                    self._append_project(name, out, mid)
 
         merged = "\n\n".join(
             f"【{n} 的产出】\n{r}" for n, r in results.items() if (r or "").strip())
@@ -299,48 +348,86 @@ class Room:
         return out
 
     # ---------- 私有记忆 ----------
+    def _room_cfg(self) -> dict:
+        """拼一份和 config.json 里同形状的房间配置，vault 用它生成 frontmatter。"""
+        return {"id": self.room_id, "name": self.room_name,
+                "leader": self.leader, "project": self.project_name}
+
+    def _specs(self) -> list[dict]:
+        return [m.spec for m in self.members.values()]
+
     def _memory_path(self, member: Adapter) -> Path:
         """记忆放在工作区之外，队友翻文件也看不到。"""
         return self.memory_dir / f"{member.name}.md"
 
-    def _read_memory(self, member: Adapter) -> str:
+    def _ensure_memory_note(self, member: Adapter) -> Path:
         p = self._memory_path(member)
-        if not p.exists():
-            return "（还没有积累，这是你的第一次任务）"
-        lines = [ln for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
-        return "\n".join(lines[-25:]) if lines else "（还没有积累）"
+        vault.ensure_memory(
+            p, vault.memory_meta(self._room_cfg(), member.spec),
+            f"{member.spec.get('persona') or member.name} · {self.project_name}",
+            vault.memory_intro(self._room_cfg(), member.spec, self.project_name))
+        return p
+
+    def _read_memory(self, member: Adapter) -> str:
+        # 只读「## 记忆」区块，frontmatter 和导航不进 prompt
+        text = vault.read_section(self._memory_path(member),
+                                  vault.SECTION_MEMORY, limit_lines=25)
+        return text or "（还没有积累，这是你的第一次任务）"
 
     def _append_memory(self, member: Adapter, note: str) -> None:
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
+        p = self._ensure_memory_note(member)
         stamp = time.strftime("%m-%d %H:%M")
-        with self._memory_path(member).open("a", encoding="utf-8") as f:
-            f.write(f"- [{stamp}] {note}\n")
+        vault.append_block(p, vault.SECTION_MEMORY, f"- [{stamp}] {note}")
+        vault.touch_updated(p)
 
     def _files(self) -> str:
-        items = [str(p.relative_to(self.workdir)) for p in self.workdir.rglob("*") if p.is_file()]
-        return "\n".join(f"- {i}" for i in sorted(items)[:30]) if items else "（空）"
+        """最近改过的排前面。用户刚传的附件、队友刚写的产出都在前几条。"""
+        files = [p for p in self.workdir.rglob("*")
+                 if p.is_file() and "__pycache__" not in p.parts]
+        if not files:
+            return "（空）"
+        try:
+            files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
+            files.sort()
+        return "\n".join(f"- {p.relative_to(self.workdir).as_posix()}"
+                         for p in files[:40])
 
     # ---------- 项目内容（整个群聊共享，和成员记忆是两回事） ----------
     def _project_path(self) -> Path:
         return self.project_dir / "project.md"
 
+    def _ensure_project_note(self) -> Path:
+        p = self._project_path()
+        vault.ensure_project(
+            p, vault.project_meta(self._room_cfg()), self.project_name,
+            vault.project_intro(self._room_cfg(), self._specs(), self.project_name))
+        return p
+
     def _read_project(self) -> str:
         p = self._project_path()
-        if not p.exists():
+        bg = vault.read_section(p, vault.SECTION_BG, limit_chars=1500)
+        log = vault.read_section(p, vault.SECTION_LOG, limit_chars=3500, to_end=True)
+        if not bg and not log:
             return "（这个群聊还没有项目笔记。可以在界面里补上项目背景、目标、约束）"
-        return p.read_text(encoding="utf-8", errors="ignore")[-3500:]
+        parts = []
+        if bg:
+            parts.append(f"【项目背景】\n{bg}")
+        if log:
+            parts.append(f"【最近对话记录】\n{log}")
+        return "\n\n".join(parts)
 
-    def _append_project(self, heading: str, body: str) -> None:
+    def _append_project(self, heading: str, body: str, msg_id: int = 0) -> None:
         body = (body or "").strip()
         if not body:
             return
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        p = self._project_path()
-        if not p.exists():
-            p.write_text(f"# 项目笔记 · {self.room_id}\n", encoding="utf-8")
+        p = self._ensure_project_note()
         stamp = time.strftime("%m-%d %H:%M")
-        with p.open("a", encoding="utf-8") as f:
-            f.write(f"\n## [{stamp}] {heading}\n\n{body[:1200]}\n")
+        # 埋一个不可见的 id，删消息时才能精确定位到这一段
+        marker = f"<!-- msg:{msg_id} -->\n" if msg_id else ""
+        vault.append_block(p, vault.SECTION_LOG,
+                           f"### [{stamp}] {heading}\n{marker}\n{body[:1200]}")
+        vault.touch_updated(p)
 
     def _rules(self, member: Adapter) -> str:
         """负责人的规则和普通成员完全不同，这里分开写。"""

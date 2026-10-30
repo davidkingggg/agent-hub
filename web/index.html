@@ -34,29 +34,56 @@
   <main class="chat">
     <header class="chat-header">
       <select id="room-select" class="room-select"></select>
-      <h1 id="room-title">主群</h1>
-      <span id="room-meta" class="meta"></span>
+      <div class="head-main">
+        <h1 id="room-title">主群</h1>
+        <span id="room-meta" class="meta"></span>
+      </div>
       <span class="spacer"></span>
-      <button id="btn-project" class="btn-ghost">项目内容</button>
+      <button id="btn-expand-side" class="btn-ghost hidden" title="展开侧栏">成员</button>
+      <button id="btn-project" class="btn-ghost">项目</button>
+      <button id="btn-files" class="btn-ghost">文件</button>
+      <button id="btn-theme" class="btn-ghost" title="切换主题：跟随系统 / 浅色 / 深色">跟随系统</button>
       <button id="btn-new-room-top" class="btn-ghost">+ 群聊</button>
     </header>
     <div id="mobile-members" class="mobile-members"></div>
     <div id="messages" class="messages"></div>
+    <div id="select-bar" class="select-bar hidden">
+      <span id="select-count">已选 0 条</span>
+      <button id="btn-select-all" class="mini-btn">全选</button>
+      <span class="spacer"></span>
+      <button id="btn-delete-msgs" class="btn-danger">删除</button>
+      <button id="btn-cancel-select" class="btn-ghost">取消</button>
+    </div>
     <div id="working-bar" class="working-bar hidden"></div>
     <div class="composer">
       <div id="mention-pop" class="mention-pop hidden"></div>
-      <textarea id="input" rows="2" placeholder="在这里输入消息。打 @ 选人，或直接点右侧成员头像（Enter 发送，Shift+Enter 换行）"></textarea>
-      <button id="btn-send">发送</button>
+      <div class="composer-main">
+        <div id="attach-strip" class="attach-strip hidden"></div>
+        <div class="composer-row">
+          <textarea id="input" rows="2" placeholder="输入消息，@ 选人；可粘贴图片或拖入文件"></textarea>
+          <button id="btn-attach" class="btn-ghost attach-btn" title="上传图片或文件（也可以直接粘贴、拖进来）">附件</button>
+          <button id="btn-send">发送</button>
+        </div>
+      </div>
+      <input id="file-input" type="file" multiple hidden>
     </div>
   </main>
 
   <aside class="members">
-    <div class="panel-head">
-      <span>成员</span>
-      <button id="btn-add-member" class="btn-ghost">+ 添加</button>
+    <div class="panel-tabs">
+      <button class="panel-tab active" data-rtab="members">成员</button>
+      <button class="panel-tab" data-rtab="files">文件</button>
+      <span class="spacer"></span>
+      <button id="btn-add-member" class="btn-ghost" title="添加成员">+</button>
+      <button id="btn-collapse-side" class="btn-ghost" title="收起侧栏">»</button>
     </div>
-    <div id="member-list" class="member-list"></div>
-    <div class="hint">点头像编辑人格，长按或右键可删</div>
+    <div id="rtab-members" class="panel-body">
+      <div id="member-list" class="member-list"></div>
+      <div class="hint">点头像插入 @，右键编辑人格或移除</div>
+    </div>
+    <div id="rtab-files" class="panel-body hidden">
+      <div id="side-file-list" class="file-list"></div>
+    </div>
   </aside>
 </div>
 
@@ -113,8 +140,12 @@
 <div id="modal-project" class="modal hidden">
   <div class="modal-card">
     <h2>项目内容</h2>
-    <p class="tip">整个群聊共享，所有成员都会看到。上面可以写项目背景、目标、约束；下面会自动追加对话记录。</p>
-    <textarea id="f-project" rows="18"></textarea>
+    <label class="field">项目名（记忆目录名，改它会重命名 Obsidian 里的文件夹）
+      <input id="f-project-name" placeholder="比如：硅铁市场调研">
+    </label>
+    <p class="tip">整个群聊共享，所有成员都会看到。这里写项目背景、目标、约束；对话记录由程序自动追加到文件末尾，不会被覆盖。</p>
+    <p class="tip" id="vault-tip"></p>
+    <textarea id="f-project" rows="16"></textarea>
     <div class="modal-actions">
       <span class="spacer"></span>
       <button id="btn-project-cancel" class="btn-ghost">取消</button>
@@ -153,9 +184,41 @@
   </div>
 </div>
 
+<div id="modal-files" class="modal hidden">
+  <div class="modal-card" style="width:min(700px,100%)">
+    <h2>工作目录文件</h2>
+    <p class="tip">成员生成的文件都在这里，点一条直接打开。消息正文里的文件名也可以点。</p>
+    <div id="file-list" class="file-list"></div>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="files-refresh" class="btn-ghost">刷新</button>
+      <button id="files-close" class="btn-ghost">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-preview" class="modal hidden">
+  <div class="modal-card preview-card">
+    <div class="preview-head">
+      <div class="preview-title-wrap">
+        <h2 id="preview-title">文件</h2>
+        <span id="preview-meta" class="preview-meta"></span>
+      </div>
+      <span class="spacer"></span>
+      <button id="preview-open" class="btn-ghost" title="用系统默认程序打开">打开</button>
+      <button id="preview-reveal" class="btn-ghost" title="在资源管理器中显示">定位</button>
+      <button id="preview-copy" class="btn-ghost" title="复制本地路径">复制路径</button>
+      <a id="preview-download" class="btn-ghost" href="#" download title="下载到浏览器默认目录">下载</a>
+      <button id="preview-close" class="btn-ghost">关闭</button>
+    </div>
+    <div id="preview-body" class="preview-body"></div>
+  </div>
+</div>
+
 <div id="ctx-menu" class="ctx-menu hidden"></div>
 
 <div id="toast" class="toast hidden"></div>
+<div id="boot-error" class="boot-error hidden"></div>
 <script src="/app.js"></script>
 </body>
 </html>
