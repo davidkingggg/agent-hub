@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<title>协作房间</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-dot"></span>协作房间
+    </div>
+    <div id="credits" class="credits" title="点击填写剩余积分">
+      <span class="credits-label">剩余积分</span>
+      <span class="credits-value" id="credits-value">—</span>
+      <a class="credits-link" id="credits-link" href="https://www.codebuddy.ai" target="_blank"
+         rel="noopener" title="打开官网查看用量">↗</a>
+    </div>
+    <div class="section-title">群聊</div>
+    <div id="room-list" class="room-list"></div>
+    <button id="btn-new-room" class="btn-ghost wide">+ 新建群聊</button>
+
+    <div class="section-title" style="margin-top:14px">单聊</div>
+    <div id="dm-list" class="room-list"></div>
+    <button id="btn-new-dm" class="btn-ghost wide">+ 新建单聊</button>
+    <button id="btn-settings" class="btn-ghost wide">⚙ 设置 · API 接入</button>
+    <div class="sidebar-footer">
+      <span id="conn-dot" class="dot off"></span>
+      <span id="conn-text">连接中…</span>
+    </div>
+  </aside>
+
+  <main class="chat">
+    <header class="chat-header">
+      <button id="btn-drawer-rooms" class="btn-ghost icon-btn only-mobile" aria-label="群聊列表">☰</button>
+      <select id="room-select" class="room-select"></select>
+      <h1 id="room-title">主群</h1>
+      <span id="room-meta" class="meta"></span>
+      <span class="spacer"></span>
+      <button id="btn-project" class="btn-ghost">项目内容</button>
+      <button id="btn-files" class="btn-ghost">📁 文件</button>
+      <button id="btn-drawer-members" class="btn-ghost only-mobile">成员</button>
+      <button id="btn-new-room-top" class="btn-ghost only-mobile-hide">+ 群聊</button>
+    </header>
+    <div id="mobile-members" class="mobile-members"></div>
+    <div id="messages" class="messages"></div>
+    <div id="working-bar" class="working-bar hidden"></div>
+    <div class="composer">
+      <div id="mention-pop" class="mention-pop hidden"></div>
+      <textarea id="input" rows="2" placeholder="在这里输入消息。打 @ 选人，或直接点右侧成员头像（Enter 发送，Shift+Enter 换行）"></textarea>
+      <button id="btn-send">发送</button>
+    </div>
+  </main>
+
+  <aside class="members">
+    <div class="panel-head">
+      <span>成员</span>
+      <button id="btn-add-member" class="btn-ghost">+ 添加</button>
+    </div>
+    <div id="member-list" class="member-list"></div>
+    <div class="hint">点头像编辑人格，长按或右键可删</div>
+  </aside>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-card">
+    <h2 id="modal-title">编辑成员</h2>
+    <div class="tabs">
+      <button class="tab active" data-tab="persona">人格设定</button>
+      <button class="tab" data-tab="memory">成员记忆</button>
+    </div>
+
+    <div class="tab-panel" id="panel-persona">
+      <div class="form">
+        <div class="row">
+          <label>名字（@ 用这个）<input id="f-name" placeholder="researcher"></label>
+          <label>角色<input id="f-role" placeholder="研究员"></label>
+        </div>
+        <div class="row">
+          <label>昵称<input id="f-persona" placeholder="阿研"></label>
+          <label>颜色<input id="f-color" type="color" value="#4F46E5"></label>
+        </div>
+        <div class="row">
+          <label>模型（只影响这个成员）
+            <select id="f-model"></select>
+          </label>
+          <label>推理强度 effort
+            <select id="f-effort"></select>
+          </label>
+        </div>
+        <label>备用模型（主模型限流 429 时自动切换，逗号分隔）
+          <input id="f-fallback" placeholder="glm-5.3, kimi-k3.1-pro">
+        </label>
+        <label>人格设定（全局生效，跟着这个成员走，换群聊也不变）
+          <textarea id="f-prompt" rows="11" placeholder="你叫……&#10;&#10;【性格】…&#10;【职责】…&#10;【说话方式】…"></textarea>
+        </label>
+      </div>
+    </div>
+
+    <div class="tab-panel hidden" id="panel-memory">
+      <p class="tip">这个成员在<b>当前群聊</b>里积累的私有记忆，只有它自己看得到。换个群聊就是另一份。</p>
+      <textarea id="f-memory" rows="15" placeholder="（还没有记忆，跑几轮任务就会自动积累）"></textarea>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-del" class="btn-danger">彻底删除</button>
+      <button id="btn-remove-room" class="btn-ghost">从本群移除</button>
+      <span class="spacer"></span>
+      <button id="btn-cancel" class="btn-ghost">取消</button>
+      <button id="btn-save" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-project" class="modal hidden">
+  <div class="modal-card">
+    <h2>项目内容</h2>
+    <p class="tip">整个群聊共享，所有成员都会看到。上面可以写项目背景、目标、约束；下面会自动追加对话记录。</p>
+    <textarea id="f-project" rows="18"></textarea>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="btn-project-cancel" class="btn-ghost">取消</button>
+      <button id="btn-project-save" class="btn-primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-add" class="modal hidden">
+  <div class="modal-card" style="width:min(520px,100%)">
+    <h2>添加成员到本群</h2>
+    <div class="tabs">
+      <button class="tab active" data-addtab="pool">已有成员</button>
+      <button class="tab" data-addtab="tpl">模板库</button>
+    </div>
+    <p class="tip" id="add-tip">从已有成员里勾选加入。人格是全局的，加进来只是建立关联。</p>
+    <div id="add-pool" class="add-list"></div>
+    <div id="add-tpl" class="add-list hidden"></div>
+    <div class="modal-actions">
+      <button id="btn-new-in-room" class="btn-ghost">+ 空白新建</button>
+      <span class="spacer"></span>
+      <button id="btn-add-cancel" class="btn-ghost">取消</button>
+      <button id="btn-add-ok" class="btn-primary">加入</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-pick" class="modal hidden">
+  <div class="modal-card" style="width:min(380px,100%)">
+    <h2 id="pick-title">选一个成员</h2>
+    <div id="pick-list" class="add-list"></div>
+    <div class="modal-actions">
+      <span class="spacer"></span>
+      <button id="pick-cancel" class="btn-ghost">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="modal-settings" class="modal hidden">
+  <div class="modal-card">
+    <h2>设置 · API 接入</h2>
+    <p class="tip">这里配的就是 hermes 原生的 <b>custom_providers</b>，直接写进 hub 的 HERMES_HOME
+      （<code>config.yaml</code> + <code>.env</code>）。保存后成员弹窗的「模型」下拉立刻列出
+      <b>接入名/模型名</b>，所有成员自由选任何接入源的模型。</p>
+
+    <div id="settings-view">
+      <div id="settings-list" class="settings-list"></div>
+      <div class="modal-actions">
+        <button id="btn-add-provider" class="btn-ghost">+ 新增接入</button>
+        <span class="spacer"></span>
+        <button id="btn-settings-close" class="btn-ghost">关闭</button>
+      </div>
+    </div>
+
+    <div id="provider-form" class="hidden">
+      <h3 id="pf-title" class="form-title">新增接入</h3>
+      <div class="form">
+        <div class="row">
+          <label>接入名（字母/数字/-/_）
+            <input id="pf-name" placeholder="deepseek" autocomplete="off">
+          </label>
+          <label>Base URL
+            <input id="pf-url" placeholder="https://api.deepseek.com/v1" autocomplete="off">
+          </label>
+        </div>
+        <div class="row">
+          <label>API Key
+            <input id="pf-key" type="password" autocomplete="new-password"
+                   placeholder="新建必填；编辑时留空=不改现有 Key">
+          </label>
+          <label>Key 环境变量
+            <input id="pf-keyenv" placeholder="DEEPSEEK_API_KEY" autocomplete="off">
+          </label>
+        </div>
+        <div class="models-block">
+          <div class="models-head">模型列表（id + 上下文长度）</div>
+          <div id="pf-models" class="model-rows"></div>
+        </div>
+        <div class="pf-tools">
+          <button id="pf-fetch" class="btn-ghost">从 API 获取模型</button>
+          <button id="pf-add-model" class="btn-ghost">+ 手动加一个</button>
+        </div>
+      </div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="pf-cancel" class="btn-ghost">取消</button>
+        <button id="pf-save" class="btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-files" class="modal hidden">
+  <div class="modal-card">
+    <h2>工作目录文件 · <span id="files-room"></span></h2>
+    <p class="tip">本群的共享工作目录（<code>workspaces/…</code>）：成员产出的文件都在这，
+      他们也能看到你上传的。点文件名新开标签页查看，图片/PDF 直接预览。</p>
+    <div class="upload-row">
+      <input type="file" id="files-input" multiple>
+      <span class="tip" id="upload-status"></span>
+    </div>
+    <div id="files-list" class="files-list"></div>
+    <div class="modal-actions">
+      <button id="files-refresh" class="btn-ghost">刷新</button>
+      <span class="spacer"></span>
+      <button id="files-close" class="btn-ghost">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div id="drawer-backdrop" class="drawer-backdrop hidden"></div>
+
+<div id="ctx-menu" class="ctx-menu hidden"></div>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/app.js"></script>
+</body>
+</html>

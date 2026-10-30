@@ -15,7 +15,7 @@ harness、自己的工具、自己的模型，这一层只负责「共享对话 
 | [`agent-hub-codebuddy/`](agent-hub-codebuddy/) | CodeBuddy CLI | 可用 |
 | `agent-hub-claude/` | Claude Code CLI | 规划中 |
 | `agent-hub-api/` | 纯 API（OpenAI 兼容端点） | 规划中 |
-| `agent-hub-termux/` | 手机 Termux | 规划中 |
+| [`agent-hub-termux-hermes/`](agent-hub-termux-hermes/) | 手机 Termux + Hermes Agent | 可用 |
 
 各版本共用同一套设计（对话流、路由、记忆、Obsidian 集成），差别只在「怎么调用成员」。
 
@@ -27,6 +27,17 @@ python server.py
 ```
 
 打开 http://127.0.0.1:8898 。首次运行会自动从 `config.example.json` 生成 `config.json`。
+
+**手机 Termux 版**（Hermes Agent 当成员后端，为触摸屏适配）：
+
+```bash
+cd agent-hub-termux-hermes
+./start.sh
+```
+
+首次运行自动生成 `config.json`（并把 `HERMES_HOME` 指到本目录）+ 初始化 `.hermes-home/`
+隔离家目录，然后开 http://127.0.0.1:8898 。详见
+[agent-hub-termux-hermes/README.md](agent-hub-termux-hermes/README.md)。
 
 **没装 CodeBuddy 也能用**——把成员的 `type` 改成 `api` 接任意 OpenAI 兼容端点，
 或者改 `cmd` 换成 claude / codex / gemini。

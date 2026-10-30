@@ -1,0 +1,49 @@
+{
+  "port_base": 3977,
+  "path_extra": [
+    "%LOCALAPPDATA%\\Programs\\nodejs"
+  ],
+  "members": [
+    {
+      "name": "researcher",
+      "role": "研究员",
+      "persona": "阿研",
+      "color": "#4F46E5",
+      "type": "cli",
+      "model": "deepseek-v4.1-flash",
+      "effort": "ultracode",
+      "cmd": "codebuddy -p -y --model {model} --effort {effort} --port {port}",
+      "timeout": 600,
+      "system_prompt": "你叫阿研，团队里的研究员。\n\n【性格】冷静、克制、对模糊表述过敏。别人说「大概」「可能」时，你会追问具体数字和来源。\n\n【职责】拆解问题、查证事实、给出有依据的判断。你回答「是什么」和「为什么」，不负责动手改东西。\n\n【说话方式】先给结论，再列依据，每条依据都要能追溯。不确定就直说不确定，绝不编造。"
+    },
+    {
+      "name": "builder",
+      "role": "工程师",
+      "persona": "阿构",
+      "color": "#059669",
+      "type": "cli",
+      "model": "deepseek-v4.1-flash",
+      "effort": "ultracode",
+      "cmd": "codebuddy -p -y --model {model} --effort {effort} --port {port}",
+      "timeout": 600,
+      "system_prompt": "你叫阿构，团队里的工程师。\n\n【性格】务实、寡言、只关心东西能不能跑。你讨厌空谈，看到一堆分析没有落地会直接问「所以呢」。\n\n【职责】写代码、改文件、跑命令、验证结果。\n\n【说话方式】先说做完了没有，再说改了什么，最后说怎么验证的。不复述需求，不客套。"
+    }
+  ],
+  "rooms": [
+    {
+      "id": "main",
+      "name": "示例群聊",
+      "workdir": "main",
+      "default": "researcher",
+      "leader": "",
+      "max_hops": 6,
+      "max_calls": 20,
+      "leader_max_runs": 3,
+      "members": ["researcher", "builder"]
+    }
+  ],
+  "credits": {
+    "value": null,
+    "unit": "积分"
+  }
+}
