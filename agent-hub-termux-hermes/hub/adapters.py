@@ -14,10 +14,37 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+# 模型名会被拼进 shell 命令（shell=True），只允许这些字符。
+# 覆盖 mimo-v2.6-pro / xiaomi/mimo-v2.6-flash / claude-sonnet-4 这类写法。
+_MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]{0,63}$")
+
+
+def _kill_tree(pid: int) -> None:
+    """连子孙进程一起杀。
+
+    `subprocess.run(timeout=...)` 超时后只 kill 直接子进程——在 Windows 上
+    那个是 cmd.exe，真正的 codebuddy 和它拉起的 node 会变成孤儿继续跑：
+    继续扣额度、继续改工作目录里的文件。POSIX 下同理：sh 被杀了，
+    hermes 子进程还会活着把任务跑完。
+    """
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True, timeout=10)
+        else:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
 
 
 class Adapter:
@@ -123,8 +150,15 @@ class CliAdapter(Adapter):
 
     @staticmethod
     def _with_model(cmd: str, model: str) -> str:
-        """把命令里的 --model 换成指定值。没有 --model 就原样返回。"""
+        """把命令里的 --model 换成指定值。没有 --model 就原样返回。
+
+        model 会被拼进 shell 命令（shell=True），所以必须是白名单里的安全字符。
+        否则 `--model "x; rm -rf ~"` 就是一条现成的命令注入。
+        """
         if not model:
+            return cmd
+        if not _MODEL_RE.fullmatch(model):
+            print(f"  [warn] 模型名含非法字符，已忽略：{model!r}", flush=True)
             return cmd
         return re.sub(r"--model\s+\S+", f"--model {model}", cmd, count=1)
 
@@ -158,22 +192,34 @@ class CliAdapter(Adapter):
 
     def _exec(self, cmd: str, prompt: str, cwd: Path) -> str:
         # {workdir} 占位符：给 hermes 的 --in 用。文件工具按「记录的
-        # session cwd」解析相对路径，不显式传 --in 时会漂到 HOME 去。
+        # session cwd」解析相对路径，不带 --in 时会漂到 HOME 去。
         # shlex.quote 防路径里的空格/引号被 shell 吃掉。
         cmd = cmd.replace("{workdir}", shlex.quote(str(cwd)))
         try:
-            p = subprocess.run(
-                cmd, shell=True, input=prompt.encode("utf-8"), cwd=str(cwd),
-                capture_output=True, timeout=self.timeout, env=self._env())
-        except subprocess.TimeoutExpired:
-            return f"[超时：超过 {self.timeout}s，已终止]"
+            # POSIX 下单独开会话，超时才能按进程组整组杀
+            extra = {} if sys.platform == "win32" else {"start_new_session": True}
+            proc = subprocess.Popen(
+                cmd, shell=True, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(cwd), env=self._env(), **extra)
         except Exception as e:
             return f"[启动失败] {type(e).__name__}: {e}"
 
-        out = self._decode(p.stdout).strip()
-        err = self._decode(p.stderr).strip()
-        if p.returncode != 0 and not out:
-            return f"[退出码 {p.returncode}]\n{err[-900:]}"
+        try:
+            out_b, err_b = proc.communicate(prompt.encode("utf-8"),
+                                            timeout=self.timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc.pid)
+            try:
+                proc.communicate(timeout=5)
+            except Exception:
+                pass
+            return f"[超时：超过 {self.timeout}s，已终止]"
+
+        out = self._decode(out_b).strip()
+        err = self._decode(err_b).strip()
+        if proc.returncode != 0 and not out:
+            return f"[退出码 {proc.returncode}]\n{err[-900:]}"
         return out or err[-900:] or "[没有输出]"
 
 

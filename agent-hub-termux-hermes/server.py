@@ -57,6 +57,15 @@ else:
 
 _models_cache: list[str] | None = None
 
+# ---------- 安全与健壮性（移植自 codebuddy 线 6ab4fb0） ----------
+MAX_BODY = 64 * 1024 * 1024          # 请求体上限，防超大 Content-Length 吃光内存
+MAX_RAW = 200 * 1024 * 1024          # 单个文件吐出的上限
+# 模型名会被拼进 shell 命令（adapters._with_model），白名单校验
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-/:]{0,63}$")
+# 成员名：会被拼进 @提及、记忆文件名、glob 模式
+MEMBER_RE = re.compile(r"[\w\u4e00-\u9fa5\-]{1,32}")
+SKIP_DIRS = {"__pycache__", "node_modules", ".git", ".venv", "venv", ".idea"}
+
 _cfg_lock = threading.Lock()
 _room_locks: dict[str, threading.Lock] = {}
 _store = Store(DB_PATH)
@@ -137,6 +146,18 @@ def build_room(room_id: str, on_event=None) -> Room:
 
 # ============================ 项目笔记 ============================
 
+def safe_filename(name: str) -> str:
+    """只留文件名，去掉路径分隔符和 Windows 非法字符，中文原样保留。"""
+    name = (name or "").replace("\\", "/").split("/")[-1]
+    name = re.sub(r'[<>:"|?*\r\n\t\x00-\x1f]', "_", name).strip(" .")
+    if not name:
+        return "file"
+    stem, ext = os.path.splitext(name)
+    if len(name) > 96:
+        name = stem[:80] + ext[:16]
+    return name
+
+
 def room_workdir(room_id: str) -> Path:
     """房间的共享工作目录（workspaces/<房间>）。"""
     cfg = load_config()
@@ -149,15 +170,25 @@ def room_workdir(room_id: str) -> Path:
 def project_path(room_id: str) -> Path:
     cfg = load_config()
     room_cfg = next((r for r in cfg["rooms"] if r["id"] == room_id), None)
-    wd = (room_cfg or {}).get("workdir", room_id)
+    # 房间不存在时不能拿 URL 片段直接拼——`../..` 会跑到项目目录外面去
+    wd = room_cfg.get("workdir", room_id) if room_cfg \
+        else safe_filename(room_id) or "_unknown"
     return ROOT / "projects" / wd / "project.md"
 
 
 def memory_path(room_id: str, member: str) -> Path:
     cfg = load_config()
     room_cfg = next((r for r in cfg["rooms"] if r["id"] == room_id), None)
-    wd = (room_cfg or {}).get("workdir", room_id)
-    return ROOT / "projects" / wd / "memory" / f"{member}.md"
+    wd = room_cfg.get("workdir", room_id) if room_cfg \
+        else safe_filename(room_id) or "_unknown"
+    # member 来自 URL / 请求体，当不可信输入：先剥成纯文件名，
+    # 否则 `../../README` 能读写项目目录之外的任意 .md
+    safe = safe_filename(member)
+    if safe.lower().endswith(".md"):
+        safe = safe[:-3]
+    if not safe or safe in (".", ".."):
+        safe = "_"
+    return ROOT / "projects" / wd / "memory" / f"{safe}.md"
 
 
 def read_project(room_id: str) -> str:
@@ -763,9 +794,16 @@ class Handler(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         if not n:
             return {}
+        if n > MAX_BODY:
+            # 不读、不缓冲，直接断开：否则一个超大 Content-Length 就能把内存吃光
+            print(f"[warn] 请求体 {n} 字节超过上限 {MAX_BODY}，已拒绝", flush=True)
+            self.close_connection = True
+            return {}
         try:
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except Exception:
+            # 静默返回空字典的话，调用方只会看到「没收到数据」，很难查
+            traceback.print_exc()
             return {}
 
     def _parts(self):
@@ -801,16 +839,18 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json({"error": str(e)}, 404)
                     files = []
                     if wd.exists():
-                        for p in wd.rglob("*"):
-                            if not p.is_file():
-                                continue
-                            try:
-                                st = p.stat()
-                            except OSError:
-                                continue
-                            files.append({"path": str(p.relative_to(wd)),
-                                          "size": st.st_size,
-                                          "mtime": int(st.st_mtime)})
+                        # os.walk 带剪枝：深目录和 node_modules 不再整棵遍历
+                        for dirpath, dirnames, filenames in os.walk(wd):
+                            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+                            for fn in filenames:
+                                p = Path(dirpath) / fn
+                                try:
+                                    st = p.stat()
+                                except OSError:
+                                    continue
+                                files.append({"path": str(p.relative_to(wd)),
+                                              "size": st.st_size,
+                                              "mtime": int(st.st_mtime)})
                     files.sort(key=lambda f: -f["mtime"])
                     return self._json({"files": files[:500]})
                 if parts[3] == "file" and len(parts) >= 5:
@@ -939,11 +979,17 @@ class Handler(BaseHTTPRequestHandler):
             if parts[:2] == ["api", "rooms"] and len(parts) >= 3:
                 cfg["rooms"] = [r for r in cfg["rooms"] if r["id"] != parts[2]]
                 save_config(cfg)
+                # 删房间时清掉它的待处理队列，worker 不再捞死房间的任务
+                with _queue_lock:
+                    _queues.pop(parts[2], None)
                 return self._json({"ok": True})
 
             # 彻底删除成员：人格、所有群聊里的记忆一起清掉
             if parts[:2] == ["api", "members"] and len(parts) >= 3:
                 name = parts[2]
+                # name 会被拼进 glob 模式（*/memory/<name>.md），不校验就能删到目录外
+                if not MEMBER_RE.fullmatch(name):
+                    return self._json({"error": "成员名不合法"}, 400)
                 cfg["members"] = [m for m in cfg["members"] if m["name"] != name]
                 for r in cfg["rooms"]:
                     r["members"] = [x for x in r.get("members", []) if x != name]
@@ -966,12 +1012,38 @@ class Handler(BaseHTTPRequestHandler):
         name = (body.get("name") or "").strip()
         if not name:
             return self._json({"error": "成员名字不能为空"}, 400)
+        # 名字会被拼进 @提及、记忆文件名、glob 模式，限制成安全字符
+        if not MEMBER_RE.fullmatch(name):
+            return self._json(
+                {"error": "名字只能用中英文、数字、下划线或连字符，最长 32 个字符"}, 400)
         cfg = ensure_ports(load_config())
         old = next((m for m in cfg["members"] if m["name"] == name), None)
         model = (body.get("model") or "").strip() \
             or (old.get("model") if old else "") or default_model(cfg)
         effort = (body.get("effort") or "").strip() \
             or (old.get("effort") if old else "") or default_effort(cfg)
+        # model 会被拼进 shell 命令（adapters._with_model），必须白名单
+        if not MODEL_RE.fullmatch(model):
+            return self._json({"error": f"模型名不合法：{model}"}, 400)
+        # effort 同样会被拼进 --reasoning/--effort，只能是合法档位
+        if effort not in EFFORTS:
+            return self._json({"error": f"推理强度不合法：{effort}"}, 400)
+
+        fb = body["fallback_models"] if "fallback_models" in body \
+            else (old.get("fallback_models") if old else [])
+        if not isinstance(fb, list):
+            fb = []
+        fb = [str(x).strip() for x in fb if str(x).strip()]
+        bad = [x for x in fb if not MODEL_RE.fullmatch(x)]
+        if bad:
+            return self._json({"error": f"备用模型名不合法：{'、'.join(bad)}"}, 400)
+
+        try:
+            timeout = int(body.get("timeout") or 600)
+        except (TypeError, ValueError):
+            timeout = 600
+        timeout = max(10, min(timeout, 3600))
+
         member = {
             "name": name,
             "role": body.get("role", "").strip() or "成员",
@@ -980,17 +1052,15 @@ class Handler(BaseHTTPRequestHandler):
             "type": body.get("type", "cli"),
             "model": model,
             "effort": effort,
-            # 注意：不能用 `body.get(...) or old`。空列表是 falsy，
-            # 那样「把备用模型清空」会被旧值顶回去，看起来像保存失败。
-            "fallback_models": body["fallback_models"]
-                if "fallback_models" in body
-                else (old.get("fallback_models") if old else []),
-            "cmd": body.get("cmd") or DEFAULT_CMD,
+            "fallback_models": fb,
+            # cmd 不从 API 接收：它最终会被 shell=True 执行，等于把「执行任意命令」
+            # 暴露给任何能发 POST 的页面。要自定义命令行，直接改 config.json。
+            "cmd": (old.get("cmd") if old else "") or DEFAULT_CMD,
             # env（如 HERMES_HOME 隔离目录）不能在保存时丢：UI 表单不带这个
             # 字段，丢了成员就会退回宿主 hermes home，记忆注入白名单全回来。
             "env": body.get("env") if "env" in body
                    else (old.get("env") if old else None),
-            "timeout": int(body.get("timeout") or 600),
+            "timeout": timeout,
             "system_prompt": body.get("system_prompt", ""),
         }
         if old:
@@ -1076,9 +1146,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _static(self, parts):
         rel = "/".join(parts) if parts else "index.html"
-        path = (WEB_DIR / rel).resolve()
-        if not str(path).startswith(str(WEB_DIR.resolve())) or not path.is_file():
-            path = WEB_DIR / "index.html"
+        root = WEB_DIR.resolve()
+        path = (root / rel).resolve()
+        # 不能用 startswith 判前缀：`web-evil/x` 也以 `web` 开头。
+        # 用 parents 判断真实的目录归属。
+        if path != root and root not in path.parents:
+            path = root / "index.html"
+        if not path.is_file():
+            path = root / "index.html"
         data = path.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", MIME.get(path.suffix, "application/octet-stream"))
@@ -1097,6 +1172,10 @@ class Handler(BaseHTTPRequestHandler):
         target = (wd / rel).resolve()
         if not str(target).startswith(str(wd) + os.sep) or not target.is_file():
             return self._json({"error": "文件不存在"}, 404)
+        if target.stat().st_size > MAX_RAW:
+            # 不整读进内存：超大文件让用户本地打开
+            return self._json({"error": f"文件超过 {MAX_RAW // (1024 * 1024)}MB，"
+                                        f"请在本地打开"}, 413)
         data = target.read_bytes()
         ctype = mimetypes.guess_type(target.name)[0]
         # 浏览器不认 text/markdown 这类 MIME（会变成下载），统一按 text/plain 展示

@@ -24,6 +24,13 @@ class Store:
         self.conn = sqlite3.connect(str(p), check_same_thread=False)
         self.lock = threading.Lock()
         self.conn.row_factory = sqlite3.Row
+        # WAL：读不挡写、写不挡读。默认的 rollback journal 下，
+        # 一个成员在写消息时另一个成员的 history 查询会被卡住。
+        try:
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error:
+            pass
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
