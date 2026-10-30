@@ -1114,16 +1114,17 @@ class Handler(BaseHTTPRequestHandler):
                  "stamp": time.strftime("%m-%d %H:%M", time.localtime(r["created_at"])),
                  "sender": "用户" if r["sender"] in ("你", "用户") else r["sender"]}
                 for r in rows]
-        synced = 0
+        synced, skipped = 0, 0
         try:
             p = project_path(room_id)
-            synced = vault.remove_log_entries(p, keys)
+            synced, skipped = vault.remove_log_entries(p, keys)
             if synced:
                 vault.touch_updated(p)
         except Exception:
             traceback.print_exc()
 
-        return self._json({"ok": True, "deleted": len(rows), "obsidian": synced})
+        return self._json({"ok": True, "deleted": len(rows),
+                           "obsidian": synced, "obsidian_skipped": skipped})
 
     def _open_local(self, room_id: str, body: dict):
         """用系统默认程序打开文件，或者在资源管理器里定位它。

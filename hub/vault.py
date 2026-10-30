@@ -279,26 +279,22 @@ def append_block(path: Path, section: str, block: str) -> None:
 
 # ============================ 删除对话记录 ============================
 
-def _entry_matches(chunk: list[str], id_set: set[str], fallback: set) -> bool:
-    text = "\n".join(chunk)
-    m = re.search(r"<!--\s*msg:(\d+)\s*-->", text)
-    if m:
-        return m.group(1) in id_set
-    m2 = re.match(r"^###\s+\[([^\]]+)\]\s+(.+?)\s*$", chunk[0])
-    if not m2:
-        return False
-    return (m2.group(1).strip(), m2.group(2).strip()) in fallback
+def _entry_key(chunk: list[str]) -> tuple[str, str] | None:
+    if not chunk:
+        return None
+    m = re.match(r"^###\s+\[([^\]]+)\]\s+(.+?)\s*$", chunk[0])
+    return (m.group(1).strip(), m.group(2).strip()) if m else None
 
 
-def remove_log_entries(path: Path, keys: list[dict]) -> int:
-    """从 `## 对话记录` 里删掉指定条目，返回删掉的条数。
+def remove_log_entries(path: Path, keys: list[dict]) -> tuple[int, int]:
+    """从 `## 对话记录` 里删掉指定条目，返回 (删掉的条数, 无法确定的条数)。
 
-    新记录带 `<!-- msg:ID -->` 标记，按 id 精确匹配；
-    老记录没有标记，退回「时间 + 发送者」匹配——同一分钟同一人发两条会误伤，
-    但这种概率很低，而且删错了还能从 .trash 里翻回来。
+    新记录带 `<!-- msg:ID -->`，按 id 精确匹配。
+    老记录没有标记，只能按「时间 + 发送者」找——同一组有多条时**整组不动**，
+    让用户自己去 Obsidian 删。宁可少删，也不能删错。
     """
     if not path.exists() or not keys:
-        return 0
+        return 0, 0
     text = path.read_text(encoding="utf-8", errors="ignore")
     front, body = split_front(text)
     lines = body.splitlines()
@@ -310,7 +306,7 @@ def remove_log_entries(path: Path, keys: list[dict]) -> int:
             start = i
             break
     if start is None:
-        return 0
+        return 0, 0
     # 对话记录是最后一个区块，一路到文件末尾——中间那些 `## 小标题`
     # 是 agent 输出的一部分，不是区块边界，不能拿它们切断
     end = len(lines)
@@ -319,31 +315,50 @@ def remove_log_entries(path: Path, keys: list[dict]) -> int:
     fallback = {(k.get("stamp"), k.get("sender")) for k in keys
                 if k.get("stamp") and k.get("sender")}
 
-    kept: list[str] = []
-    removed = 0
-    chunk: list[str] = []
+    chunks: list[list[str]] = []
+    cur: list[str] = []
     for ln in lines[start + 1:end]:
         if re.match(r"^###\s+", ln):
-            if chunk:
-                if _entry_matches(chunk, id_set, fallback):
-                    removed += 1
-                else:
-                    kept.extend(chunk)
-            chunk = [ln]
+            if cur:
+                chunks.append(cur)
+            cur = [ln]
         else:
-            chunk.append(ln)
-    if chunk:
-        if _entry_matches(chunk, id_set, fallback):
-            removed += 1
-        else:
-            kept.extend(chunk)
+            cur.append(ln)
+    if cur:
+        chunks.append(cur)
 
-    if not removed:
-        return 0
+    drop: set[int] = set()
+    groups: dict[tuple, list[int]] = {}
+    for i, ch in enumerate(chunks):
+        m = re.search(r"<!--\s*msg:(\d+)\s*-->", "\n".join(ch))
+        if m:
+            if m.group(1) in id_set:
+                drop.add(i)
+            continue
+        k = _entry_key(ch)
+        if k:
+            groups.setdefault(k, []).append(i)
+
+    skipped = 0
+    for k, idxs in groups.items():
+        if k not in fallback:
+            continue
+        if len(idxs) == 1:
+            drop.add(idxs[0])
+        else:
+            skipped += len(idxs)      # 同组多条，分不清是哪条，整组不动
+
+    if not drop:
+        return 0, skipped
+
+    kept: list[str] = []
+    for i, ch in enumerate(chunks):
+        if i not in drop:
+            kept.extend(ch)
 
     new_lines = lines[:start + 1] + kept + lines[end:]
     path.write_text(front + "\n".join(new_lines).rstrip() + "\n", encoding="utf-8")
-    return removed
+    return len(drop), skipped
 
 
 # ============================ 建笔记 ============================

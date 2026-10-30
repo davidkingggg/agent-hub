@@ -830,8 +830,12 @@ async function deleteSelected() {
       method: 'DELETE',
       body: JSON.stringify({ ids }),
     });
-    const sync = res.obsidian ? `，Obsidian 同步 ${res.obsidian} 条` : '';
-    toast(`已删除 ${res.deleted} 条${sync}`);
+    let msg = `已删除 ${res.deleted} 条`;
+    if (res.obsidian) msg += `，Obsidian 同步 ${res.obsidian} 条`;
+    if (res.obsidian_skipped) {
+      msg += `；另有 ${res.obsidian_skipped} 条同时间记录分不清是哪条，没动`;
+    }
+    toast(msg);
     exitSelect();
     await loadMessages();
   } catch (e) {
