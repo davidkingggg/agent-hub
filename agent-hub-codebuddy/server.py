@@ -154,17 +154,17 @@ def build_room(room_id: str, on_event=None, hint_text: str = "") -> Room:
 
     members = [build(s) for s in specs]
     workdir = ROOT / "workspaces" / room_cfg.get("workdir", room_id)
-    # 有负责人时默认给更多层（一次「派发-验收」要吃 2 层）
+    # 有负责人时默认给更多层（一次「派发-验收」要吃 2 层，50 步需要 100 层）
     leader = room_cfg.get("leader", "")
-    default_hops = 12 if leader else 6
-    # 真正的成本闸门：一次用户请求最多调多少次模型
-    default_calls = 40 if leader else 20
+    default_hops = 108 if leader else 6
+    # 真正的成本闸门：一次用户请求最多调多少次模型（50 步 × 每步最多 8 人）
+    default_calls = 400 if leader else 20
     return Room(_store, room_id, members, workdir,
                 default_member=room_cfg.get("default", ""),
                 max_hops=int(room_cfg.get("max_hops", default_hops)),
                 max_runs=int(room_cfg.get("max_runs", 1)),
                 leader=leader,
-                leader_max_runs=int(room_cfg.get("leader_max_runs", 3)),
+                leader_max_runs=int(room_cfg.get("leader_max_runs", 50)),
                 max_calls=int(room_cfg.get("max_calls", default_calls)),
                 verbose=False, on_event=on_event,
                 room_name=room_cfg.get("name") or room_id,
