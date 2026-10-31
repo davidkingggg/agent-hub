@@ -30,9 +30,9 @@ MEMORY_CHARS = 40000
 class Room:
     def __init__(self, store: Store, room_id: str, members: list[Adapter],
                  workdir: Path, default_member: str = "",
-                 max_hops: int = 3, max_runs: int = 1, verbose: bool = True,
-                 leader: str = "", leader_max_runs: int = 3,
-                 max_calls: int = 40, on_event=None):
+                 max_hops: int = 108, max_runs: int = 1, verbose: bool = True,
+                 leader: str = "", leader_max_runs: int = 50,
+                 max_calls: int = 400, on_event=None):
         self.store = store
         self.room_id = room_id
         self.members = {m.name: m for m in members}
@@ -50,7 +50,7 @@ class Room:
         self.max_runs = max_runs
         # 真正的成本闸门是「总共调用了多少次模型」，不是「嵌套了几层」。
         # 层数只用来防深度爆炸，不该拿来当任务轮次上限——Leader 模式下
-        # 一次「派发-验收」就要吃掉 2 层，6 层其实只够 3 轮。
+        # 一次「派发-验收」就要吃掉 2 层，108 层够 50 步。
         self.max_calls = max(1, max_calls)
         self._calls = 0
         self._wrapped = False
@@ -178,6 +178,10 @@ class Room:
             self._log(f"  （{', '.join(skipped)} 本轮已执行过，跳过）")
         targets = [t for t in targets if self._runs.get(t, 0) < self._limit(t)]
         if not targets:
+            if skipped:
+                # 不能静默返回：用户会以为还在跑，实际已经停了
+                self._emit("status",
+                           text=f"{'、'.join(skipped)} 已达本轮上限，未继续（可发新消息重置）")
             return
         for t in targets:
             self._runs[t] = self._runs.get(t, 0) + 1
@@ -386,7 +390,13 @@ class Room:
 【纪律】
 - 派发前先想清楚「什么算完成」，验收就按这个标准判，不要临时加码。
 - 不要替队友做他们该做的事；你自己只做统筹和判断。
-- 最多 3 轮。第 3 轮必须给结论，哪怕还不完美也要说清楚哪里没达到。"""
+- 最多 50 步（每步 = 你发言一次并派发一轮）。步数够长，可以边做边优化。
+- 打回时必须说清「具体改哪一处、改成什么样」，不许只说「再优化一下」。
+  同一个改法两次没解决问题，就换思路，不要重复同一个动作。
+- 每推进 10 步左右，在回复开头加一行进度：已完成 / 现在做 / 还剩 / 卡点。
+  长任务不报进度，用户分不清你是在收敛还是在打转。
+- 预算（调用次数）比步数更早用完。预算见底时代码会请你收尾，直接把
+  已完成 / 未完成 / 下一步建议 交代清楚。"""
 
         return """【规则】
 1. 只做你负责的那部分，不要替队友做他们的活。

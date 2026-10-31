@@ -96,14 +96,14 @@ def make_room(cfg: dict, demo: bool = False) -> Room:
     room = cfg.get("_room", {})
     room_id = store.ensure_room(room.get("id", "main"))
     leader = room.get("leader", "")
-    default_hops = 12 if leader else 6
-    default_calls = 40 if leader else 20
+    default_hops = 108 if leader else 6
+    default_calls = 400 if leader else 20
     return Room(store, room_id, members, workdir,
                 default_member=cfg.get("default_member", ""),
                 max_hops=int(room.get("max_hops", default_hops)),
                 max_runs=int(room.get("max_runs", 1)),
                 leader=leader,
-                leader_max_runs=int(room.get("leader_max_runs", 3)),
+                leader_max_runs=int(room.get("leader_max_runs", 50)),
                 max_calls=int(room.get("max_calls", default_calls)))
 
 
